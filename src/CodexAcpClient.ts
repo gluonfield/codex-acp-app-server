@@ -44,6 +44,10 @@ import packageJson from "../package.json";
 import type {AuthenticationStatusResponse} from "./AcpExtensions";
 import {createCodexCollaborationMode} from "./CollaborationModeConfig";
 import type {ModeKind} from "./app-server/ModeKind";
+import {
+    type JazModelMetadata,
+    mergeJazModelMetadata,
+} from "./JazModelMetadata";
 
 /**
  * Well-known provider id for the client-configurable custom LLM gateway.
@@ -68,6 +72,7 @@ export class CodexAcpClient {
     private readonly codexClient: CodexAppServerClient;
     private readonly config: JsonObject;
     private readonly modelProvider: string | null;
+    private readonly modelMetadata: JazModelMetadata | null;
     private gatewayConfig: GatewayConfig | null;
     private pendingLoginCompleted: Promise<AccountLoginCompletedNotification> | null = null;
     private pendingAccountUpdated: Promise<AccountUpdatedNotification> | null = null;
@@ -76,10 +81,16 @@ export class CodexAcpClient {
     private configPath: string | null = null;
 
 
-    constructor(codexClient: CodexAppServerClient, codexConfig?: JsonObject, modelProvider?: string) {
+    constructor(
+        codexClient: CodexAppServerClient,
+        codexConfig?: JsonObject,
+        modelProvider?: string,
+        modelMetadata?: JazModelMetadata | null,
+    ) {
         this.codexClient = codexClient;
         this.config = codexConfig ?? {};
         this.modelProvider = modelProvider ?? null;
+        this.modelMetadata = modelMetadata ?? null;
         this.gatewayConfig = null;
     }
 
@@ -109,6 +120,12 @@ export class CodexAcpClient {
     async authenticate(authRequest: acp.AuthenticateRequest): Promise<Boolean> {
         if (!isCodexAuthRequest(authRequest)) {
             throw RequestError.invalidRequest();
+        }
+        if (!this.usesOpenAiAccountAuth() && authRequest.methodId !== "gateway") {
+            throw RequestError.invalidRequest(
+                undefined,
+                `Codex account authentication is unavailable for model provider ${this.getModelProvider()}`,
+            );
         }
         this.gatewayConfig = null;
         switch (authRequest.methodId) {
@@ -212,13 +229,19 @@ export class CodexAcpClient {
     }
 
     async logout(): Promise<void> {
+        if (!this.usesOpenAiAccountAuth()) {
+            throw RequestError.invalidRequest(
+                undefined,
+                `Codex logout is unavailable for model provider ${this.getModelProvider()}`,
+            );
+        }
         const accountUpdatedPromise = this.awaitNextAccountUpdated();
         await this.codexClient.accountLogout();
         await accountUpdatedPromise;
     }
 
     async authRequired(): Promise<Boolean> {
-        if (this.gatewayConfig != null) {
+        if (!this.usesOpenAiAccountAuth()) {
             // The authentication is already in progress:
             // the gateway config is set during the authentication request processing.
             // We assume that custom model providers will handle authentication themselves,
@@ -405,6 +428,26 @@ export class CodexAcpClient {
         };
     }
 
+    async forkSideSession(
+        parentSessionId: string,
+        developerInstructions: string,
+    ): Promise<{sessionId: string; currentModelId: string}> {
+        const configuredInstructions = this.config["developer_instructions"];
+        const response = await this.codexClient.threadFork({
+            threadId: parentSessionId,
+            ephemeral: true,
+            developerInstructions: [
+                typeof configuredInstructions === "string" ? configuredInstructions : "",
+                developerInstructions,
+            ].filter(Boolean).join("\n\n"),
+        });
+        const models = await this.fetchAvailableModels();
+        return {
+            sessionId: response.thread.id,
+            currentModelId: this.createModelId(models, response.model, response.reasoningEffort).toString(),
+        };
+    }
+
     async closeSession(sessionId: string): Promise<void> {
         try {
             await this.codexClient.threadUnsubscribe({threadId: sessionId});
@@ -541,6 +584,15 @@ export class CodexAcpClient {
         return this.gatewayConfig?.modelProvider ?? this.modelProvider;
     }
 
+    usesOpenAiAccountAuth(): boolean {
+        const provider = this.getModelProvider();
+        return provider === null || provider === "openai";
+    }
+
+    getModelContextWindow(modelId: string): number | null {
+        return this.modelMetadata?.id === modelId ? this.modelMetadata.contextWindow : null;
+    }
+
     private async getResumeModelProvider(): Promise<string> {
         // Prefer an explicit/gateway provider, then the provider persisted in Codex config.
         // Keep OpenAI as the final fallback for ChatGPT-authenticated sessions without a configured provider.
@@ -597,7 +649,10 @@ export class CodexAcpClient {
     createModelId(availableModels: Model[], modelId: string | null, reasoningEffort: ReasoningEffort | null): ModelId {
         const selectedModel = availableModels.find(m => m.id === modelId);
         if (selectedModel) {
-            return ModelId.create(selectedModel.id, reasoningEffort ?? selectedModel.defaultReasoningEffort);
+            const defaultEffort = selectedModel.supportedReasoningEfforts.length > 0
+                ? selectedModel.defaultReasoningEffort
+                : null;
+            return ModelId.create(selectedModel.id, reasoningEffort ?? defaultEffort);
         }
 
         // The configured model is not in Codex's advertised catalog. This is
@@ -610,7 +665,7 @@ export class CodexAcpClient {
         // every turn and makes requests to custom-provider endpoints fail with
         // "unknown model".
         if (modelId) {
-            return ModelId.create(modelId, reasoningEffort ?? "medium");
+            return ModelId.create(modelId, reasoningEffort);
         }
 
         const defaultModel = availableModels.find(m => m.isDefault);
@@ -695,7 +750,6 @@ export class CodexAcpClient {
         shouldCancel?: () => boolean,
     ): Promise<TurnCompletedNotification | null> {
         const input = buildPromptItems(request.prompt);
-        const effort = modelId.effort as ReasoningEffort | null; //TODO remove unsafe conversion
         await this.refreshSkills(cwd, additionalDirectories);
         if (shouldCancel?.()) {
             return null;
@@ -706,7 +760,7 @@ export class CodexAcpClient {
             approvalPolicy: agentMode.approvalPolicy,
             sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),
             summary: disableSummary ? "none" : "auto",
-            effort: effort,
+            effort: modelId.effort,
             model: modelId.model,
             serviceTier: serviceTier,
         }, onTurnStarted);
@@ -863,7 +917,7 @@ export class CodexAcpClient {
             cursor = response.nextCursor;
         } while (cursor);
 
-        return models;
+        return mergeJazModelMetadata(models, this.modelMetadata);
     }
 
     private async runSessionListDiagnostics(): Promise<Record<string, unknown>> {

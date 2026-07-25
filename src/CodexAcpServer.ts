@@ -90,6 +90,7 @@ import {
     type ThreadGoalSnapshot,
     toThreadGoalSnapshot,
 } from "./ThreadGoalSnapshot";
+import {parseSideChatScope, SideChatManager} from "./SideChatManager";
 
 export interface SessionState {
     sessionId: string,
@@ -158,6 +159,7 @@ export class CodexAcpServer {
     private readonly getExitCode: () => number | null;
     private readonly getRecentStderr: () => string;
     private readonly availableCommands: CodexCommands;
+    private readonly sideChats: SideChatManager;
     private clientInfo: acp.Implementation | null;
     private clientCapabilities: acp.ClientCapabilities | null;
     private terminalOutputMode: TerminalOutputMode;
@@ -202,6 +204,12 @@ export class CodexAcpServer {
             (operation) => this.runWithProcessCheck(operation),
             () => this.refreshSessionsAuthState(null)
         );
+        this.sideChats = new SideChatManager(
+            connection,
+            codexAcpClient,
+            () => this.clientCapabilities,
+            operation => this.runWithProcessCheck(operation),
+        );
     }
 
     async initialize(
@@ -213,6 +221,7 @@ export class CodexAcpServer {
         this.terminalOutputMode = resolveTerminalOutputMode(_params.clientCapabilities);
         this.booleanConfigOptionsSupported = clientSupportsBooleanConfigOptions(_params.clientCapabilities);
         await this.runWithProcessCheck(() => this.codexAcpClient.initialize(_params));
+        const accountAuth = this.codexAcpClient.usesOpenAiAccountAuth();
         return {
             protocolVersion: acp.PROTOCOL_VERSION,
             agentInfo: {
@@ -221,9 +230,7 @@ export class CodexAcpServer {
                 version: packageJson.version,
             },
             agentCapabilities: {
-                auth: {
-                    logout: {},
-                },
+                ...(accountAuth ? {auth: {logout: {}}} : {}),
                 providers: {},
                 loadSession: true,
                 promptCapabilities: {
@@ -243,7 +250,7 @@ export class CodexAcpServer {
                     sse: false
                 }
             },
-            authMethods: getCodexAuthMethods(_params.clientCapabilities),
+            authMethods: accountAuth ? getCodexAuthMethods(_params.clientCapabilities) : [],
             _meta: {
                 steering: {
                     supported: true,
@@ -319,9 +326,12 @@ export class CodexAcpServer {
 
     async handleError(e: Error){
         if (e.message.includes("log out") || e.message.includes("cloud requirements")) {
-            await this.runWithProcessCheck(() => this.codexAcpClient.logout());
-            await this.refreshSessionsAuthState(null);
-            throw RequestError.internalError(`${(e.message)}\n\nYou have been logged out. Please try again.`);
+            if (this.codexAcpClient.usesOpenAiAccountAuth()) {
+                await this.runWithProcessCheck(() => this.codexAcpClient.logout());
+                await this.refreshSessionsAuthState(null);
+                throw RequestError.internalError(`${e.message}\n\nYou have been logged out. Please try again.`);
+            }
+            throw RequestError.internalError(e.message);
         }
         const configPath = this.codexAcpClient.getHomePath() ?? "global";
         if (e.message.includes("load config")) {
@@ -453,7 +463,9 @@ export class CodexAcpServer {
             currentTurnId: null,
             lastTokenUsage: null,
             totalTokenUsage: null,
-            modelContextWindow: null,
+            modelContextWindow: this.codexAcpClient.getModelContextWindow(
+                ModelId.fromString(currentModelId).model,
+            ),
             rateLimits: null,
             account: authState.account,
             authConfigured: authState.authConfigured,
@@ -598,6 +610,7 @@ export class CodexAcpServer {
                 await activePrompt.completion;
             }
 
+            await this.sideChats.closeParent(params.sessionId);
             await this.runWithProcessCheck(() => this.codexAcpClient.closeSession(params.sessionId));
             logger.log("Session closed", {sessionId: params.sessionId});
         } finally {
@@ -816,7 +829,7 @@ export class CodexAcpServer {
         }
         const currentEffort = ModelId.fromString(sessionState.currentModelId).effort;
         const effort = findSupportedEffort(model.supportedReasoningEfforts, currentEffort)
-            ?? model.defaultReasoningEffort;
+            ?? (model.supportedReasoningEfforts.length > 0 ? model.defaultReasoningEffort : null);
         this.applyModelAndEffort(sessionState, model, effort);
     }
 
@@ -829,11 +842,12 @@ export class CodexAcpServer {
         sessionState.currentModelId = ModelId.create(model, effort).toString();
     }
 
-    private applyModelAndEffort(sessionState: SessionState, model: Model, effort: ReasoningEffort): void {
-        sessionState.currentModelId = ModelId.fromComponents(model, effort).toString();
+    private applyModelAndEffort(sessionState: SessionState, model: Model, effort: ReasoningEffort | null): void {
+        sessionState.currentModelId = ModelId.create(model.id, effort).toString();
         sessionState.supportedReasoningEfforts = model.supportedReasoningEfforts;
         sessionState.supportedInputModalities = model.inputModalities;
         sessionState.currentModelSupportsFast = modelSupportsFast(model);
+        sessionState.modelContextWindow = this.codexAcpClient.getModelContextWindow(model.id);
     }
 
     async unstable_setSessionModel(params: LegacySetSessionModelRequest): Promise<LegacySetSessionModelResponse> {
@@ -850,7 +864,7 @@ export class CodexAcpServer {
         const model = models.find(m => m.id === requestedModelName);
         if (!model) throw new Error(`Unknown model ${params.modelId}`);
 
-        let reasoningEffort: ReasoningEffort;
+        let reasoningEffort: ReasoningEffort | null;
         if (requestedEffort) {
             const matchedEffort = findSupportedEffort(model.supportedReasoningEfforts, requestedEffort);
             if (!matchedEffort) {
@@ -858,7 +872,9 @@ export class CodexAcpServer {
             }
             reasoningEffort = matchedEffort;
         } else {
-            reasoningEffort = model.defaultReasoningEffort;
+            reasoningEffort = model.supportedReasoningEfforts.length > 0
+                ? model.defaultReasoningEffort
+                : null;
         }
 
         sessionState.availableModels = models;
@@ -1223,11 +1239,17 @@ export class CodexAcpServer {
     private createModelState(availableModels: Model[], selectedModelId: string): LegacySessionModelState {
         const allowedModels = availableModels
             .flatMap((model) =>
-                model.supportedReasoningEfforts.map((effort) => ({
-                    modelId: ModelId.fromComponents(model, effort.reasoningEffort).toString(),
-                    name: `${this.normalizeModelDisplayName(model.displayName)} (${effort.reasoningEffort})`,
-                    description: `${model.description} ${effort.description}`,
-                }))
+                model.supportedReasoningEfforts.length === 0
+                    ? [{
+                        modelId: model.id,
+                        name: this.normalizeModelDisplayName(model.displayName),
+                        description: model.description,
+                    }]
+                    : model.supportedReasoningEfforts.map((effort) => ({
+                        modelId: ModelId.fromComponents(model, effort.reasoningEffort).toString(),
+                        name: `${this.normalizeModelDisplayName(model.displayName)} (${effort.reasoningEffort})`,
+                        description: `${model.description} ${effort.description}`,
+                    }))
             );
         return {
             availableModels: allowedModels,
@@ -1295,7 +1317,9 @@ export class CodexAcpServer {
             currentTurnId: null,
             lastTokenUsage: null,
             totalTokenUsage: null,
-            modelContextWindow: null,
+            modelContextWindow: this.codexAcpClient.getModelContextWindow(
+                ModelId.fromString(currentModelId).model,
+            ),
             rateLimits: null,
             account: authState.account,
             authConfigured: authState.authConfigured,
@@ -1862,6 +1886,10 @@ export class CodexAcpServer {
             prompt: params.prompt,
         });
         const sessionState = this.getSessionState(params.sessionId);
+        const sideChat = parseSideChatScope(params);
+        if (sideChat) {
+            return await this.sideChats.prompt(params, sessionState, sideChat, signal);
+        }
         sessionState.currentTurnId = null;
         sessionState.lastTokenUsage = null;
         const activePrompt = this.trackActivePrompt(params.sessionId);
@@ -2120,6 +2148,7 @@ export class CodexAcpServer {
     }
 
     async cancel(params: acp.CancelNotification): Promise<void> {
+        await this.sideChats.cancelParent(params.sessionId);
         const sessionState = this.sessions.get(params.sessionId);
         if (!sessionState) {
             logger.log("Cancel request rejected: session not found", {sessionId: params.sessionId});

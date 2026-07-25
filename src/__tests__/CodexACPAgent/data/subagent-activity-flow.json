@@ -20,6 +20,15 @@
               "threadId": "thread-paris",
               "path": "/root/weather_research",
               "activity": "started"
+            },
+            "providerSubagent": {
+              "provider": "codex",
+              "id": "/root/weather_research",
+              "thread_id": "thread-paris",
+              "name": "weather_research",
+              "task": "weather_research",
+              "status": "running",
+              "summary": "Spawned"
             }
           }
         }

@@ -33,6 +33,17 @@
               "receiverThreadIds": [
                 "thread-paris"
               ]
+            },
+            "providerSubagent": {
+              "provider": "codex",
+              "id": "thread-paris",
+              "thread_id": "thread-paris",
+              "parent_id": "thread-main",
+              "status": "running",
+              "summary": "Checking weather",
+              "prompt": "Find the current weather in Paris.",
+              "model": null,
+              "reasoning_effort": null
             }
           }
         }
@@ -74,6 +85,17 @@
               "receiverThreadIds": [
                 "thread-paris"
               ]
+            },
+            "providerSubagent": {
+              "provider": "codex",
+              "id": "thread-paris",
+              "thread_id": "thread-paris",
+              "parent_id": "thread-main",
+              "status": "completed",
+              "summary": "Spawned",
+              "prompt": "Find the current weather in Paris.",
+              "model": null,
+              "reasoning_effort": null
             }
           }
         }

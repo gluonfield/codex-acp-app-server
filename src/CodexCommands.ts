@@ -99,7 +99,7 @@ export class CodexCommands {
      * See the original cli commands documentation here: https://developers.openai.com/codex/cli/slash-commands/
      */
     private getBuiltinCommands(): AvailableCommand[] {
-        return [
+        const commands: AvailableCommand[] = [
             {
                 name: "plan",
                 description: "Turn plan mode on.",
@@ -166,6 +166,9 @@ export class CodexCommands {
                 input: null
             }
         ];
+        return this.codexAcpClient.usesOpenAiAccountAuth()
+            ? commands
+            : commands.filter(command => command.name !== "logout");
     }
 
     private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {

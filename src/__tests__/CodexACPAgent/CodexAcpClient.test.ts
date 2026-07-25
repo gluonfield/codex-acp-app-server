@@ -738,7 +738,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
             data: [{
                 id: "gpt-5",
-                name: "GPT-5",
+                displayName: "GPT-5",
+                description: "",
                 inputModalities: ["text"],
                 supportedReasoningEfforts: [],
             }],
@@ -3105,9 +3106,9 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(result).toEqual(ModelId.create('MiniMax-M3', 'high'));
     });
 
-    it('should default the effort for an uncatalogued model when reasoningEffort is null', () => {
+    it('should keep unknown reasoning effort unknown for an uncatalogued model', () => {
         const result = fixture.getCodexAcpClient().createModelId(mockModels, 'MiniMax-M3', null);
-        expect(result).toEqual(ModelId.create('MiniMax-M3', 'medium'));
+        expect(result).toEqual(ModelId.create('MiniMax-M3', null));
     });
 
     /**

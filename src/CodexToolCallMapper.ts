@@ -10,6 +10,7 @@ import type {
 } from "./app-server";
 import type {
     CollabAgentToolCallStatus,
+    CollabAgentStatus,
     CommandAction,
     CommandExecutionStatus,
     DynamicToolCallStatus,
@@ -452,6 +453,8 @@ function createCollabAgentToolCallRawInput(item: CollabAgentToolCallItem) {
 }
 
 function createCollabAgentToolCallMeta(item: CollabAgentToolCallItem) {
+    const receiverThreadId = item.receiverThreadIds[0];
+    const agentState = receiverThreadId ? item.agentsStates[receiverThreadId] : undefined;
     return {
         codex: {
             collaboration: {
@@ -459,6 +462,19 @@ function createCollabAgentToolCallMeta(item: CollabAgentToolCallItem) {
                 senderThreadId: item.senderThreadId,
                 receiverThreadIds: item.receiverThreadIds,
             },
+            ...(receiverThreadId ? {
+                providerSubagent: {
+                    provider: "codex",
+                    id: receiverThreadId,
+                    thread_id: receiverThreadId,
+                    parent_id: item.senderThreadId,
+                    status: collabAgentStatus(agentState?.status, item.status),
+                    summary: agentState?.message ?? collabAgentSummary(item.tool, item.status),
+                    prompt: item.prompt,
+                    model: item.model,
+                    reasoning_effort: item.reasoningEffort,
+                },
+            } : {}),
         },
     };
 }
@@ -485,6 +501,15 @@ export function createSubAgentActivityUpdate(
                     path: item.agentPath,
                     activity: item.kind,
                 },
+                providerSubagent: {
+                    provider: "codex",
+                    id: item.agentPath,
+                    thread_id: item.agentThreadId,
+                    name,
+                    task: name,
+                    status: subAgentActivityStatus(item.kind),
+                    summary: subAgentActivitySummary(item.kind),
+                },
             },
         },
     };
@@ -500,6 +525,41 @@ export function createSubAgentActivityUpdate(
         sessionUpdate,
         ...common,
     };
+}
+
+function collabAgentStatus(
+    status: CollabAgentStatus | undefined,
+    toolStatus: CollabAgentToolCallItem["status"],
+): string {
+    switch (status) {
+        case "pendingInit": return "starting";
+        case "errored": return "failed";
+        case "shutdown": return "closed";
+        case "notFound": return "not_found";
+        case undefined: return toolStatus === "inProgress" ? "running" : toolStatus;
+        default: return status;
+    }
+}
+
+function collabAgentSummary(
+    tool: CollabAgentToolCallItem["tool"],
+    status: CollabAgentToolCallItem["status"],
+): string {
+    if (tool === "spawnAgent") return "Spawned";
+    if (tool === "sendInput") return status === "inProgress" ? "Working" : "Responded";
+    if (tool === "resumeAgent") return status === "inProgress" ? "Resuming" : "Resumed";
+    if (tool === "wait") return status === "inProgress" ? "Waiting" : "Wait finished";
+    return status === "inProgress" ? "Closing" : "Closed";
+}
+
+function subAgentActivityStatus(kind: SubAgentActivityItem["kind"]): string {
+    return kind === "interrupted" ? "cancelled" : "running";
+}
+
+function subAgentActivitySummary(kind: SubAgentActivityItem["kind"]): string {
+    if (kind === "started") return "Spawned";
+    if (kind === "interacted") return "Working";
+    return "Interrupted";
 }
 
 function formatSubAgentActivityTitle(kind: SubAgentActivityItem["kind"], name: string): string {

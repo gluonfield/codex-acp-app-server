@@ -53,7 +53,7 @@ export async function createSpawnedAgentFixture(
     const configuredMcpServers = mcpServers ?? [];
     writeCodexHomeConfig(resolvedPaths.codexHome, {
         model: DEFAULT_TEST_MODEL_ID.model,
-        model_reasoning_effort: DEFAULT_TEST_MODEL_ID.effort,
+        model_reasoning_effort: DEFAULT_TEST_MODEL_ID.effort!,
         web_search: "disabled",
     }, configuredMcpServers);
 

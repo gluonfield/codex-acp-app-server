@@ -13,6 +13,7 @@ Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol]
 - Text prompts, embedded context, images, resource links, and additional workspace directories.
 - Shell command, file change, permission request, MCP tool call, terminal output, reasoning, plan, web search, image generation, image view, token usage, and review events.
 - Subagent launches as standard ACP tool calls, with Codex thread identity and activity details in namespaced `_meta.codex.subagent` metadata.
+- Ephemeral side conversations backed by Codex `thread/fork`, selected with `_meta.codex.sideChat`.
 - Client-provided MCP servers over command-based stdio config and HTTP transport.
 - Slash commands: `/status`, `/mcp`, `/skills`, `/review`, `/review-branch`, `/review-commit`, `/compact`, and `/logout`, as well as configured skills.
 
@@ -56,6 +57,18 @@ The adapter advertises ACP auth methods during initialization. Clients can authe
 - `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `agent`, or `agent-full-access`.
 - `NO_BROWSER` - hide browser-based ChatGPT auth when set.
 - `APP_SERVER_LOGS` - directory for adapter logs.
+- `JAZ_CODEX_MODEL_METADATA` - exact custom-provider model metadata used by Jaz; invalid or inconsistent metadata fails closed.
+
+## Jaz fork
+
+The `gluonfield/codex-acp-app-server` fork keeps Codex App Server as the runtime owner and adds the narrow compatibility needed by Jaz:
+
+- side-chat output is routed to the parent ACP session with `_meta.codex.sideChat`;
+- custom-provider context, modality, and reasoning metadata is carried without fallback guesses;
+- native subagent activity also exposes `_meta.codex.providerSubagent`;
+- explicit non-OpenAI providers do not advertise or clear the user's shared Codex account credentials.
+
+GitHub release archives contain the adapter and the exact `@openai/codex` runtime pinned by this package.
 
 ## Development
 

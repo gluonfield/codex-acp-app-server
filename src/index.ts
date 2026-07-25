@@ -16,6 +16,7 @@ import {
     GOAL_CONTROL_METHOD, LEGACY_SET_SESSION_MODEL_METHOD,
     SESSION_STEERING_METHOD,
 } from "./AcpExtensions";
+import {readJazModelMetadata} from "./JazModelMetadata";
 
 const emptyExtensionParamsParser = z.preprocess(
     (params) => params ?? {},
@@ -67,6 +68,7 @@ function startAcpServer() {
     const configString = process.env["CODEX_CONFIG"];
     const authRequestString = process.env["DEFAULT_AUTH_REQUEST"];
     const modelProvider = process.env["MODEL_PROVIDER"];
+    const modelMetadata = readJazModelMetadata();
     const config = configString ? JSON.parse(configString) : undefined;
     const parsedAuthRequest = authRequestString ? JSON.parse(authRequestString) : undefined;
     const defaultAuthRequest = parsedAuthRequest && isCodexAuthRequest(parsedAuthRequest) ? parsedAuthRequest : undefined;
@@ -104,7 +106,7 @@ function startAcpServer() {
 
     function createAgent(connection: acp.AgentContext): CodexAcpServer {
         const appServerClient = new CodexAppServerClient(codexConnection.connection);
-        const codexClient = new CodexAcpClient(appServerClient, config, modelProvider);
+        const codexClient = new CodexAcpClient(appServerClient, config, modelProvider, modelMetadata);
         return new CodexAcpServer(connection, codexClient, defaultAuthRequest, () => codexConnection.process.exitCode, () => stderr);
     }
 

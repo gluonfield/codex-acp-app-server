@@ -131,4 +131,26 @@ describe('CodexACPAgent - initialize', () => {
         expect(methodIds).not.toContain("chat-gpt");
         expect(methodIds).toEqual(expect.arrayContaining(["api-key"]));
     });
+
+    it('does not advertise Codex account auth for an explicit custom provider', async () => {
+        const mocks = createMockConnections();
+        const appServer = new CodexAppServerClient(mocks.mockCodexConnection);
+        const client = new CodexAcpClient(appServer, {}, "openrouter");
+        const customProviderAgent = new CodexAcpServer(mocks.mockAcpConnection, client);
+
+        const result = await customProviderAgent.initialize({
+            protocolVersion: acp.PROTOCOL_VERSION,
+        });
+
+        expect(result.authMethods).toEqual([]);
+        expect(result.agentCapabilities?.auth).toBeUndefined();
+        await expect(client.authRequired()).resolves.toBe(false);
+        expect(mocks.mockCodexConnection.sendRequest).not.toHaveBeenCalledWith(
+            "account/read",
+            expect.anything(),
+        );
+        await expect(client.logout()).rejects.toThrow(
+            "Codex logout is unavailable for model provider openrouter",
+        );
+    });
 });

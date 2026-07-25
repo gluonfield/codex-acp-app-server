@@ -9,14 +9,14 @@ import type {Model} from "./app-server/v2";
 export class ModelId {
     private constructor(
         public readonly model: string,
-        public readonly effort: string
+        public readonly effort: string | null
     ) {}
 
     static fromComponents(model: Model, effort: ReasoningEffort): ModelId {
         return new ModelId(model.id, effort);
     }
 
-    static create(modelId: string, effort: ReasoningEffort): ModelId {
+    static create(modelId: string, effort: ReasoningEffort | null): ModelId {
         return new ModelId(modelId, effort);
     }
 
@@ -25,18 +25,14 @@ export class ModelId {
         const model = bracketMatch?.groups?.["model"];
         const effort = bracketMatch?.groups?.["effort"];
 
-        if (!model || !effort) {
-            throw new Error(`Unsupported format of modelId: ${modelId}. Expected: modelId[effort].`);
+        if (!model) {
+            throw new Error(`Unsupported format of modelId: ${modelId}. Expected: modelId or modelId[effort].`);
         }
 
-        if (model) {
-            return new ModelId(model, effort);
-        }
-
-        throw new Error(`Invalid modelId format: ${modelId}`);
+        return new ModelId(model, effort ?? null);
     }
 
     toString(): string {
-        return `${this.model}[${this.effort}]`;
+        return this.effort === null ? this.model : `${this.model}[${this.effort}]`;
     }
 }

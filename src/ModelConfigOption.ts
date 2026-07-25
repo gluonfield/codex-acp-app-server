@@ -11,7 +11,7 @@ function capitalize(value: string): string {
 
 export function findSupportedEffort(
     options: ReadonlyArray<ReasoningEffortOption>,
-    effort: string | undefined,
+    effort: string | null | undefined,
 ): ReasoningEffort | undefined {
     if (!effort) return undefined;
     return options.find(o => o.reasoningEffort === effort)?.reasoningEffort;
@@ -44,7 +44,7 @@ export function createModelConfigOption(availableModels: Array<Model>, currentBa
 
 export function createReasoningEffortConfigOption(
     supportedReasoningEfforts: Array<ReasoningEffortOption>,
-    currentEffort: string,
+    currentEffort: string | null,
 ): SessionConfigOption {
     return {
         id: REASONING_EFFORT_CONFIG_ID,
@@ -52,7 +52,7 @@ export function createReasoningEffortConfigOption(
         description: "How much reasoning effort the model should use",
         category: "thought_level",
         type: "select",
-        currentValue: currentEffort,
+        currentValue: currentEffort ?? "",
         options: supportedReasoningEfforts.map(option => ({
             value: option.reasoningEffort,
             name: capitalize(option.reasoningEffort),

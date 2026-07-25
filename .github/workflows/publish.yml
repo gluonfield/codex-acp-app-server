@@ -56,7 +56,7 @@ jobs:
           - runner: windows-2025
             platform: win32-x64
             triple: x86_64-pc-windows-msvc
-            bun-target: bun-windows-x64-baseline
+            bun-target: bun-windows-x64
             executable: dist/release-bin/codex-acp.exe
     runs-on: ${{ matrix.runner }}
     permissions:

@@ -405,6 +405,55 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
     });
 
+    it('starts an equivalent ephemeral side thread when an empty parent has no rollout yet', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        vi.spyOn(codexAppServerClient, "threadFork")
+            .mockRejectedValue(new Error("no rollout found for thread id parent"));
+        const threadStart = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
+            thread: {id: "side-thread"} as any,
+            model: "gpt-5",
+            reasoningEffort: "high",
+        } as any);
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({
+                id: "gpt-5",
+                defaultReasoningEffort: "high",
+                supportedReasoningEfforts: [{reasoningEffort: "high", description: "deep"}],
+            })],
+            nextCursor: null,
+        });
+
+        await expect(codexAcpClient.forkSideSession(
+            createTestSessionState({
+                sessionId: "parent",
+                currentModelId: "gpt-5[high]",
+                cwd: "/workspace",
+                additionalDirectories: ["/workspace/extra"],
+                rolloutAvailable: false,
+            }),
+            "side instructions",
+        )).resolves.toEqual({
+            sessionId: "side-thread",
+            currentModelId: "gpt-5[high]",
+        });
+
+        expect(threadStart).toHaveBeenCalledWith(expect.objectContaining({
+            cwd: "/workspace",
+            developerInstructions: "side instructions",
+            ephemeral: true,
+            model: "gpt-5",
+            config: expect.objectContaining({
+                model_reasoning_effort: "high",
+                projects: {
+                    "/workspace": {trust_level: "trusted"},
+                    "/workspace/extra": {trust_level: "trusted"},
+                },
+            }),
+        }));
+    });
+
     it('applies ACP additional directories to resumed and loaded sessions explicitly', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpClient = mockFixture.getCodexAcpClient();

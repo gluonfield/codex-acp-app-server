@@ -110,6 +110,8 @@ export interface SessionState {
     authProvider: string | null;
     cwd: string;
     additionalDirectories: string[];
+    mcpServers: acp.McpServer[];
+    rolloutAvailable: boolean;
     fastModeEnabled: boolean;
     currentModelSupportsFast: boolean;
     sessionMcpServers?: Array<string>;
@@ -472,6 +474,8 @@ export class CodexAcpServer {
             authProvider: authProvider,
             cwd: request.cwd,
             additionalDirectories: sessionMetadata.additionalDirectories,
+            mcpServers: requestedMcpServers,
+            rolloutAvailable: "sessionId" in request,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
             sessionMcpServers: sessionMcpServers,
@@ -1327,6 +1331,8 @@ export class CodexAcpServer {
             authProvider: authProvider,
             cwd: request.cwd,
             additionalDirectories: sessionMetadata.additionalDirectories,
+            mcpServers: requestedMcpServers,
+            rolloutAvailable: thread.turns.length > 0,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
             sessionMcpServers: sessionMcpServers,
@@ -1932,6 +1938,7 @@ export class CodexAcpServer {
                 onTurnStarted: (turnId, threadId) => {
                     const turn = {threadId, turnId};
                     activePrompt.currentTurn = turn;
+                    sessionState.rolloutAvailable = true;
                     if (this.promptShouldStop(params.sessionId, activePrompt)) {
                         this.interruptLateStartedTurn(turn);
                         return;
@@ -2022,6 +2029,7 @@ export class CodexAcpServer {
                     (turnId) => {
                         const turn = {threadId: params.sessionId, turnId};
                         activePrompt.currentTurn = turn;
+                        sessionState.rolloutAvailable = true;
                         if (this.promptShouldStop(params.sessionId, activePrompt)) {
                             this.interruptLateStartedTurn(turn);
                             return;

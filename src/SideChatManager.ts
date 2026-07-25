@@ -155,10 +155,7 @@ export class SideChatManager {
     }
 
     private async createChat(parent: SessionState): Promise<SideChat> {
-        const fork = await this.run(() => this.codex.forkSideSession(
-            parent.sessionId,
-            SIDE_DEVELOPER_INSTRUCTIONS,
-        ));
+        const fork = await this.run(() => this.codex.forkSideSession(parent, SIDE_DEVELOPER_INSTRUCTIONS));
         return {
             state: {
                 ...parent,

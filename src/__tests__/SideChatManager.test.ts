@@ -40,7 +40,7 @@ describe("SideChatManager", () => {
 
         expect(codex.forkSideSession).toHaveBeenCalledOnce();
         expect(codex.forkSideSession).toHaveBeenCalledWith(
-            "parent",
+            parent,
             expect.stringContaining("side conversation"),
         );
         const firstRequest = vi.mocked(codex.sendPrompt).mock.calls[0]![0];

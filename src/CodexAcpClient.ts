@@ -426,18 +426,46 @@ export class CodexAcpClient {
     }
 
     async forkSideSession(
-        parentSessionId: string,
+        parent: {
+            sessionId: string;
+            currentModelId: string;
+            cwd: string;
+            additionalDirectories: string[];
+            mcpServers: McpServer[];
+            rolloutAvailable: boolean;
+        },
         developerInstructions: string,
     ): Promise<{sessionId: string; currentModelId: string}> {
         const configuredInstructions = this.config["developer_instructions"];
-        const response = await this.codexClient.threadFork({
-            threadId: parentSessionId,
-            ephemeral: true,
-            developerInstructions: [
-                typeof configuredInstructions === "string" ? configuredInstructions : "",
-                developerInstructions,
-            ].filter(Boolean).join("\n\n"),
-        });
+        const instructions = [
+            typeof configuredInstructions === "string" ? configuredInstructions : "",
+            developerInstructions,
+        ].filter(Boolean).join("\n\n");
+        let response;
+        try {
+            response = await this.codexClient.threadFork({
+                threadId: parent.sessionId,
+                ephemeral: true,
+                developerInstructions: instructions,
+            });
+        } catch (error) {
+            if (parent.rolloutAvailable || !missingRollout(error)) throw error;
+            const model = ModelId.fromString(parent.currentModelId);
+            const config = await this.createSessionConfig(
+                parent.cwd,
+                parent.additionalDirectories,
+                parent.mcpServers,
+            );
+            if (model.effort !== null) config["model_reasoning_effort"] = model.effort;
+            response = await this.codexClient.threadStart({
+                config,
+                cwd: parent.cwd,
+                developerInstructions: instructions,
+                ephemeral: true,
+                model: model.model,
+                modelProvider: this.getModelProvider(),
+            });
+        }
         const models = await this.fetchAvailableModels();
         return {
             sessionId: response.thread.id,
@@ -988,6 +1016,10 @@ function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {
                 return null;
         }
     }).filter((block): block is UserInput => block !== null);
+}
+
+function missingRollout(error: unknown): boolean {
+    return error instanceof Error && error.message.includes("no rollout found for thread id");
 }
 
 function imageDataUrl(block: acp.ContentBlock & { type: "image" }): string {

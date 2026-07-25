@@ -378,6 +378,8 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         authProvider: null,
         cwd: "/test/cwd",
         additionalDirectories: [],
+        mcpServers: [],
+        rolloutAvailable: false,
         sessionId: "session-id",
         currentModelId: "model-id[effort]",
         availableModels: [],

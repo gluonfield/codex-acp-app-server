@@ -20,7 +20,7 @@ jobs:
           node-version: "24"
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test -- --exclude "src/__tests__/CodexACPAgent/e2e/**"
+      - run: npm test
 
   bundle:
     needs: verify

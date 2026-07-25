@@ -62,9 +62,30 @@ describe("Jaz model metadata", () => {
             id: "custom",
             displayName: "Custom",
             inputModalities: ["text"],
-            supportedReasoningEfforts: [],
-            defaultReasoningEffort: "",
+            supportedReasoningEfforts: [{
+                reasoningEffort: "medium",
+                description: "Balanced",
+            }],
+            defaultReasoningEffort: "medium",
         });
+    });
+
+    it("does not invent a model when provider capabilities are unknown", () => {
+        const keep = createTestModel({id: "keep"});
+        const metadata = readJazModelMetadata({
+            [JAZ_MODEL_METADATA_ENV]: JSON.stringify({
+                id: "custom",
+                context_window: 128_000,
+            }),
+        } as NodeJS.ProcessEnv);
+
+        expect(metadata).toMatchObject({
+            displayName: null,
+            description: null,
+            inputModalities: null,
+            reasoningEfforts: null,
+        });
+        expect(mergeJazModelMetadata([keep], metadata)).toEqual([keep]);
     });
 
     it("keeps missing reasoning effort unknown", () => {

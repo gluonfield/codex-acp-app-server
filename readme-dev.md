@@ -7,7 +7,7 @@ Set `CODEX_PATH` to run a different Codex binary; versions other than the one sp
 - `OPENAI_API_KEY` - fallback API key used when the API-key auth method is selected.
 - `CODEX_PATH` - run a specific Codex executable instead of the bundled package dependency.
 - `CODEX_CONFIG` - JSON object merged into the Codex session config.
-- `MODEL_PROVIDER` - model provider to pass to Codex for new sessions.
+- `CODEX_CONFIG.model_provider` - model provider to pass to Codex for new sessions.
 - `DEFAULT_AUTH_REQUEST` - ACP auth request JSON used when Codex requires authentication.
 - `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `agent`, or `agent-full-access`.
 - `NO_BROWSER` - hide browser-based ChatGPT auth when set.

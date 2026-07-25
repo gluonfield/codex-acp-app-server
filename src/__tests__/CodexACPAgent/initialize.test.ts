@@ -135,7 +135,7 @@ describe('CodexACPAgent - initialize', () => {
     it('does not advertise Codex account auth for an explicit custom provider', async () => {
         const mocks = createMockConnections();
         const appServer = new CodexAppServerClient(mocks.mockCodexConnection);
-        const client = new CodexAcpClient(appServer, {}, "openrouter");
+        const client = new CodexAcpClient(appServer, {model_provider: "openrouter"});
         const customProviderAgent = new CodexAcpServer(mocks.mockAcpConnection, client);
 
         const result = await customProviderAgent.initialize({

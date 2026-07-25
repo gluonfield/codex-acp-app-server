@@ -6,7 +6,7 @@ import {startCodexConnection} from "./CodexJsonRpcConnection";
 import {CodexAcpServer} from "./CodexAcpServer";
 import {createJsonStream} from "./StdUtils";
 import {isCodexAuthRequest} from "./CodexAuthMethod";
-import {CodexAcpClient} from "./CodexAcpClient";
+import {CodexAcpClient, type JsonObject} from "./CodexAcpClient";
 import {CodexAppServerClient} from "./CodexAppServerClient";
 import packageJson from "../package.json";
 import {logger} from "./Logger";
@@ -67,9 +67,9 @@ function startAcpServer() {
     const codexPath = process.env["CODEX_PATH"];
     const configString = process.env["CODEX_CONFIG"];
     const authRequestString = process.env["DEFAULT_AUTH_REQUEST"];
-    const modelProvider = process.env["MODEL_PROVIDER"];
     const modelMetadata = readJazModelMetadata();
-    const config = configString ? JSON.parse(configString) : undefined;
+    const config: JsonObject = configString ? JSON.parse(configString) : {};
+    if (modelMetadata !== null) config["model_context_window"] = modelMetadata.contextWindow;
     const parsedAuthRequest = authRequestString ? JSON.parse(authRequestString) : undefined;
     const defaultAuthRequest = parsedAuthRequest && isCodexAuthRequest(parsedAuthRequest) ? parsedAuthRequest : undefined;
 
@@ -77,7 +77,7 @@ function startAcpServer() {
         name: packageJson.name,
         version: packageJson.version,
         codexPath: codexPath,
-        modelProvider: modelProvider ?? null,
+        modelProvider: config["model_provider"] ?? null,
         codexConfig: config ?? null,
         authRequest: authRequestString ?? null,
         defaultAuthRequest: defaultAuthRequest ?? null,
@@ -106,7 +106,7 @@ function startAcpServer() {
 
     function createAgent(connection: acp.AgentContext): CodexAcpServer {
         const appServerClient = new CodexAppServerClient(codexConnection.connection);
-        const codexClient = new CodexAcpClient(appServerClient, config, modelProvider, modelMetadata);
+        const codexClient = new CodexAcpClient(appServerClient, config, modelMetadata);
         return new CodexAcpServer(connection, codexClient, defaultAuthRequest, () => codexConnection.process.exitCode, () => stderr);
     }
 

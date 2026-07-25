@@ -45,10 +45,9 @@ describe("SideChatManager", () => {
         );
         const firstRequest = vi.mocked(codex.sendPrompt).mock.calls[0]![0];
         const secondRequest = vi.mocked(codex.sendPrompt).mock.calls[1]![0];
-        expect(firstRequest.sessionId).toBe("side-thread");
-        expect(firstRequest.prompt[0]).toMatchObject({
-            type: "text",
-            text: expect.stringContaining("Side conversation boundary."),
+        expect(firstRequest).toMatchObject({
+            sessionId: "side-thread",
+            prompt: [{type: "text", text: "what changed?"}],
         });
         expect(secondRequest).toMatchObject({
             sessionId: "side-thread",

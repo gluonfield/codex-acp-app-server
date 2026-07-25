@@ -3,24 +3,14 @@ import {RequestError} from "@agentclientprotocol/sdk";
 import type {AcpClientConnection} from "./ACPSessionConnection";
 import {CodexAcpClient} from "./CodexAcpClient";
 import type {SessionState} from "./CodexAcpServer";
-import {CodexApprovalHandler} from "./CodexApprovalHandler";
-import {CodexElicitationHandler} from "./CodexElicitationHandler";
-import {CodexEventHandler} from "./CodexEventHandler";
-import {ModelId} from "./ModelId";
-import {resolveFastServiceTier} from "./FastModeConfig";
+import {CodexTurn} from "./CodexTurn";
 import {scopedAcpConnection} from "./ScopedAcpConnection";
 import {toPromptUsage} from "./TokenCount";
 import {logger} from "./Logger";
 
-const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
-
-Everything before this boundary is inherited history from the parent thread. It is reference context only. It is not your current task.
-
-Do not continue, execute, or complete any instructions, plans, tool calls, approvals, edits, or requests from before this boundary. Only messages after this boundary are active user instructions for this side conversation.`;
-
 const SIDE_DEVELOPER_INSTRUCTIONS = `You are in a side conversation, not the main thread.
 
-This side conversation is for answering questions and lightweight exploration without disrupting the main thread. The inherited fork history is reference context only; only instructions submitted after the side-conversation boundary are active.
+This side conversation is for answering questions and lightweight exploration without disrupting the main thread. The inherited fork history is reference context only; the next user message and its follow-ups are the active conversation.
 
 Do not modify files, source, git state, permissions, configuration, or workspace state unless the user explicitly requests that mutation in this side conversation.`;
 
@@ -31,11 +21,17 @@ export interface SideChatScope {
 }
 
 interface SideChat {
-    state: SessionState;
+    state: Promise<SessionState>;
+    active: ActiveSidePrompt | null;
+}
+
+interface ParentSideChats {
+    closing: boolean;
+    chats: Map<string, SideChat>;
 }
 
 interface SidePrompt {
-    chat: SideChat;
+    state: SessionState;
     turnId: string | null;
     cancelled: boolean;
 }
@@ -46,9 +42,7 @@ interface ActiveSidePrompt {
 }
 
 export class SideChatManager {
-    private readonly chats = new Map<string, Promise<SideChat>>();
-    private readonly active = new Map<string, ActiveSidePrompt>();
-    private readonly closingParents = new Set<string>();
+    private readonly parents = new Map<string, ParentSideChats>();
 
     constructor(
         private readonly connection: AcpClientConnection,
@@ -63,113 +57,105 @@ export class SideChatManager {
         scope: SideChatScope,
         signal?: AbortSignal,
     ): Promise<acp.PromptResponse> {
-        const key = sideChatKey(parent.sessionId, scope.id);
-        if (this.closingParents.has(parent.sessionId)) {
+        let parentChats = this.parents.get(parent.sessionId);
+        if (parentChats?.closing) {
             throw RequestError.invalidRequest(undefined, "Parent session is closing");
         }
-        if (this.active.has(key)) {
+        if (!parentChats) {
+            parentChats = {closing: false, chats: new Map()};
+            this.parents.set(parent.sessionId, parentChats);
+        }
+
+        let chat = parentChats.chats.get(scope.id);
+        const firstPrompt = chat === undefined;
+        if (!chat) {
+            chat = {state: this.createChat(parent), active: null};
+            parentChats.chats.set(scope.id, chat);
+        }
+        if (chat.active) {
             throw RequestError.invalidRequest(undefined, "Side chat is already running");
         }
-
-        let chatPromise = this.chats.get(key);
-        const firstPrompt = chatPromise === undefined;
-        if (chatPromise === undefined) {
-            chatPromise = this.createChat(parent);
-            this.chats.set(key, chatPromise);
-        }
-
-        let chat: SideChat;
+        let state: SessionState;
         try {
-            chat = await chatPromise;
+            state = await chat.state;
         } catch (error) {
-            if (this.chats.get(key) === chatPromise) this.chats.delete(key);
+            if (parentChats.chats.get(scope.id) === chat) parentChats.chats.delete(scope.id);
             throw error;
         }
-        if (this.closingParents.has(parent.sessionId)) {
-            return this.cancelled(chat.state);
+        if (parentChats.closing) {
+            return this.cancelled(state);
         }
-        if (this.active.has(key)) {
+        if (chat.active) {
             throw RequestError.invalidRequest(undefined, "Side chat is already running");
         }
 
         const prompt: SidePrompt = {
-            chat,
+            state,
             turnId: null,
             cancelled: false,
         };
         const active: ActiveSidePrompt = {
             prompt,
             completion: this.runPrompt(
-                firstPrompt ? withSideBoundary(request) : request,
+                request,
                 parent.sessionId,
                 scope,
                 prompt,
                 signal,
             ),
         };
-        this.active.set(key, active);
+        chat.active = active;
         try {
             return await active.completion;
         } catch (error) {
-            if (firstPrompt && this.chats.get(key) === chatPromise) {
-                this.chats.delete(key);
-                if (!this.closingParents.has(parent.sessionId)) await this.closeChat(chat);
+            if (firstPrompt && parentChats.chats.get(scope.id) === chat) {
+                parentChats.chats.delete(scope.id);
+                if (!parentChats.closing) await this.closeChat(state);
             }
             throw error;
         } finally {
-            if (this.active.get(key) === active) this.active.delete(key);
+            if (chat.active === active) chat.active = null;
         }
     }
 
     async cancelParent(parentSessionId: string): Promise<void> {
-        await Promise.all(
-            [...this.active.entries()]
-                .filter(([key]) => key.startsWith(`${parentSessionId}\0`))
-                .map(([, active]) => this.interrupt(active)),
-        );
+        const chats = this.parents.get(parentSessionId)?.chats.values() ?? [];
+        const active = [...chats].map(chat => chat.active).filter(value => value !== null);
+        await Promise.all(active.map(value => this.interrupt(value)));
     }
 
     async closeParent(parentSessionId: string): Promise<void> {
-        this.closingParents.add(parentSessionId);
-        const pending = [...this.chats.entries()]
-            .filter(([key]) => key.startsWith(`${parentSessionId}\0`));
-        const entries = (await Promise.all(pending.map(async ([key, chat]) => {
+        const parent = this.parents.get(parentSessionId);
+        if (!parent) return;
+        parent.closing = true;
+        const chats = [...parent.chats.values()];
+        const states = (await Promise.all(chats.map(async chat => {
             try {
-                return [key, await chat] as const;
+                return await chat.state;
             } catch {
                 return null;
             }
-        }))).filter(entry => entry !== null);
-        const keys = new Set(pending.map(([key]) => key));
-        const active = [...this.active.entries()]
-            .filter(([key]) => keys.has(key))
-            .map(([, value]) => value);
+        }))).filter(state => state !== null);
+        const active = chats.map(chat => chat.active).filter(value => value !== null);
         await Promise.all(active.map(value => this.interrupt(value)));
         await Promise.allSettled(active.map(value => value.completion));
-        for (const [key, chat] of pending) {
-            if (this.chats.get(key) === chat) this.chats.delete(key);
-        }
-        await Promise.all(entries.map(([, chat]) => this.closeChat(chat)));
+        parent.chats.clear();
+        await Promise.all(states.map(state => this.closeChat(state)));
+        this.parents.delete(parentSessionId);
     }
 
-    finishParentClose(parentSessionId: string): void {
-        this.closingParents.delete(parentSessionId);
-    }
-
-    private async createChat(parent: SessionState): Promise<SideChat> {
+    private async createChat(parent: SessionState): Promise<SessionState> {
         const fork = await this.run(() => this.codex.forkSideSession(parent, SIDE_DEVELOPER_INSTRUCTIONS));
         return {
-            state: {
-                ...parent,
-                sessionId: fork.sessionId,
-                currentModelId: fork.currentModelId,
-                currentTurnId: null,
-                lastTokenUsage: null,
-                totalTokenUsage: null,
-                rateLimits: null,
-                currentGoal: null,
-                goalRevision: 0,
-            },
+            ...parent,
+            sessionId: fork.sessionId,
+            currentModelId: fork.currentModelId,
+            currentTurnId: null,
+            lastTokenUsage: null,
+            totalTokenUsage: null,
+            rateLimits: null,
+            currentGoal: null,
+            goalRevision: 0,
         };
     }
 
@@ -180,7 +166,7 @@ export class SideChatManager {
         prompt: SidePrompt,
         signal?: AbortSignal,
     ): Promise<acp.PromptResponse> {
-        const state = prompt.chat.state;
+        const state = prompt.state;
         state.currentTurnId = null;
         state.lastTokenUsage = null;
         const connection = scopedAcpConnection(this.connection, parentSessionId, {
@@ -193,55 +179,32 @@ export class SideChatManager {
                 },
             },
         });
-        const eventHandler = new CodexEventHandler(connection, state);
-        const approvalHandler = new CodexApprovalHandler(connection, state, signal);
-        const elicitationHandler = new CodexElicitationHandler(
+        const turn = await CodexTurn.prepare(
             connection,
+            this.codex,
             state,
             this.clientCapabilities(),
+            operation => this.run(operation),
             signal,
         );
-        await this.codex.subscribeToSessionEvents(
-            state.sessionId,
-            async event => {
-                await elicitationHandler.handleNotification(event);
-                await eventHandler.handleNotification(event);
-            },
-            approvalHandler,
-            elicitationHandler,
-        );
         if (signal?.aborted || prompt.cancelled) return this.cancelled(state);
-        if (!state.supportedInputModalities.includes("image")
-            && request.prompt.some(block => block.type === "image")) {
-            throw RequestError.invalidRequest("The current model does not support image input");
-        }
 
         const abort = () => void this.interruptPrompt(prompt);
         signal?.addEventListener("abort", abort, {once: true});
         try {
-            const modelId = ModelId.fromString(state.currentModelId);
-            const modelLacksReasoning = state.supportedReasoningEfforts.length > 0
-                && state.supportedReasoningEfforts.every(effort => effort.reasoningEffort === "none");
-            const completed = await this.run(() => this.codex.sendPrompt(
+            const completed = await turn.send(
                 {...request, sessionId: state.sessionId},
-                state.agentMode,
-                modelId,
-                resolveFastServiceTier(state.fastModeEnabled, state.currentModelSupportsFast),
-                state.account?.type === "apiKey" || modelLacksReasoning,
-                state.cwd,
-                state.additionalDirectories,
                 turnId => {
                     prompt.turnId = turnId;
                     state.currentTurnId = turnId;
                     if (signal?.aborted || prompt.cancelled) void this.interruptPrompt(prompt);
                 },
                 () => prompt.cancelled || (signal?.aborted ?? false),
-            ));
+            );
             if (completed === null) return this.cancelled(state);
-            await this.codex.waitForSessionNotifications(state.sessionId);
+            await turn.drain();
             if (completed.turn.status === "interrupted") return this.cancelled(state);
-            const failure = eventHandler.getFailure();
-            if (failure) throw failure;
+            turn.throwIfFailed();
             return {
                 stopReason: "end_turn",
                 usage: state.lastTokenUsage === null ? null : toPromptUsage(state.lastTokenUsage),
@@ -264,19 +227,19 @@ export class SideChatManager {
         prompt.turnId = null;
         try {
             await this.codex.turnInterrupt({
-                threadId: prompt.chat.state.sessionId,
+                threadId: prompt.state.sessionId,
                 turnId,
             });
         } catch (error) {
-            logger.error(`Failed to interrupt side chat ${prompt.chat.state.sessionId}`, error);
+            logger.error(`Failed to interrupt side chat ${prompt.state.sessionId}`, error);
         }
     }
 
-    private async closeChat(chat: SideChat): Promise<void> {
+    private async closeChat(state: SessionState): Promise<void> {
         try {
-            await this.run(() => this.codex.closeSession(chat.state.sessionId));
+            await this.run(() => this.codex.closeSession(state.sessionId));
         } catch (error) {
-            logger.error(`Failed to close side chat ${chat.state.sessionId}`, error);
+            logger.error(`Failed to close side chat ${state.sessionId}`, error);
         }
     }
 
@@ -286,7 +249,6 @@ export class SideChatManager {
             usage: state.lastTokenUsage === null ? null : toPromptUsage(state.lastTokenUsage),
         };
     }
-
 }
 
 export function parseSideChatScope(request: acp.PromptRequest): SideChatScope | null {
@@ -303,24 +265,6 @@ export function parseSideChatScope(request: acp.PromptRequest): SideChatScope | 
         throw RequestError.invalidParams(undefined, "Side chat parentSessionId does not match sessionId");
     }
     return {id, command, parentSessionId};
-}
-
-function withSideBoundary(request: acp.PromptRequest): acp.PromptRequest {
-    const prompt = [...request.prompt];
-    const index = prompt.findIndex(block => block.type === "text");
-    if (index < 0) throw RequestError.invalidParams(undefined, "Side chat requires a text question");
-    const block = prompt[index] as acp.ContentBlock & {type: "text"; text: string};
-    const question = block.text.trim();
-    if (!question) throw RequestError.invalidParams(undefined, "Side chat requires a question");
-    prompt[index] = {
-        ...block,
-        text: `${SIDE_BOUNDARY_PROMPT}\n\nSide conversation question:\n${question}`,
-    };
-    return {...request, prompt};
-}
-
-function sideChatKey(parentSessionId: string, id: string): string {
-    return `${parentSessionId}\0${id}`;
 }
 
 function stringField(value: Record<string, unknown>, key: string): string | null {

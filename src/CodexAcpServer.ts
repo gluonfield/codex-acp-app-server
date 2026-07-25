@@ -1,8 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {RequestError, type SessionId, type SessionModeState} from "@agentclientprotocol/sdk";
 import {CodexEventHandler} from "./CodexEventHandler";
-import {CodexApprovalHandler} from "./CodexApprovalHandler";
-import {CodexElicitationHandler} from "./CodexElicitationHandler";
+import {CodexTurn} from "./CodexTurn";
 import {type CodexAuthRequest, getCodexAuthMethods, isCodexAuthRequest} from "./CodexAuthMethod";
 import {CodexAcpClient, type SessionMetadata, type SessionMetadataWithThread} from "./CodexAcpClient";
 import type {McpStartupResult} from "./CodexAppServerClient";
@@ -74,7 +73,6 @@ import {
     FAST_MODE_OFF,
     FAST_MODE_ON,
     modelSupportsFast,
-    resolveFastServiceTier,
 } from "./FastModeConfig";
 import packageJson from "../package.json";
 import {isJetBrains2026_1Client} from "./JBUtils";
@@ -97,7 +95,7 @@ export interface SessionState {
     currentModelId: string,
     availableModels: Array<Model>,
     supportedReasoningEfforts: Array<ReasoningEffortOption>,
-    supportedInputModalities: Array<InputModality>,
+    supportedInputModalities: Array<InputModality> | null,
     agentMode: AgentMode,
     collaborationMode: ModeKind,
     currentTurnId: string | null;
@@ -111,7 +109,6 @@ export interface SessionState {
     cwd: string;
     additionalDirectories: string[];
     mcpServers: acp.McpServer[];
-    rolloutAvailable: boolean;
     fastModeEnabled: boolean;
     currentModelSupportsFast: boolean;
     sessionMcpServers?: Array<string>;
@@ -459,7 +456,7 @@ export class CodexAcpServer {
             currentModelId: currentModelId,
             availableModels: models,
             supportedReasoningEfforts: currentModel?.supportedReasoningEfforts ?? [],
-            supportedInputModalities: currentModel?.inputModalities ?? ["text", "image"],
+            supportedInputModalities: currentModel?.inputModalities ?? null,
             agentMode: AgentMode.getInitialAgentMode(),
             collaborationMode: sessionMetadata.collaborationMode,
             currentTurnId: null,
@@ -475,7 +472,6 @@ export class CodexAcpServer {
             cwd: request.cwd,
             additionalDirectories: sessionMetadata.additionalDirectories,
             mcpServers: requestedMcpServers,
-            rolloutAvailable: "sessionId" in request,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
             sessionMcpServers: sessionMcpServers,
@@ -625,7 +621,6 @@ export class CodexAcpServer {
                 this.activePrompts.delete(params.sessionId);
                 this.steeringQueues.delete(params.sessionId);
             }
-            this.sideChats.finishParentClose(params.sessionId);
             this.endSessionCloseFence(params.sessionId);
         }
 
@@ -983,7 +978,8 @@ export class CodexAcpServer {
      */
     private assertSteerInputSupported(params: SessionSteerRequest, sessionState: SessionState): void {
         const hasImage = params.prompt.some(block => block.type === "image");
-        if (hasImage && !sessionState.supportedInputModalities.includes("image")) {
+        if (hasImage && sessionState.supportedInputModalities !== null
+            && !sessionState.supportedInputModalities.includes("image")) {
             throw RequestError.invalidRequest("The current model does not support image input");
         }
     }
@@ -1316,7 +1312,7 @@ export class CodexAcpServer {
             currentModelId: currentModelId,
             availableModels: models,
             supportedReasoningEfforts: currentModel?.supportedReasoningEfforts ?? [],
-            supportedInputModalities: currentModel?.inputModalities ?? ["text", "image"],
+            supportedInputModalities: currentModel?.inputModalities ?? null,
             agentMode: AgentMode.getInitialAgentMode(),
             collaborationMode: sessionMetadata.collaborationMode,
             currentTurnId: null,
@@ -1332,7 +1328,6 @@ export class CodexAcpServer {
             cwd: request.cwd,
             additionalDirectories: sessionMetadata.additionalDirectories,
             mcpServers: requestedMcpServers,
-            rolloutAvailable: thread.turns.length > 0,
             fastModeEnabled: sessionMetadata.currentServiceTier === "fast",
             currentModelSupportsFast: currentModelSupportsFast,
             sessionMcpServers: sessionMcpServers,
@@ -1893,6 +1888,9 @@ export class CodexAcpServer {
             prompt: params.prompt,
         });
         const sessionState = this.getSessionState(params.sessionId);
+        if (this.sessionIsClosing(params.sessionId)) {
+            return this.cancelledPromptResponse(sessionState);
+        }
         const sideChat = parseSideChatScope(params);
         if (sideChat) {
             return await this.sideChats.prompt(params, sessionState, sideChat, signal);
@@ -1911,21 +1909,14 @@ export class CodexAcpServer {
         const disposePromptRequestCancellation = this.observePromptRequestCancellation(signal, sessionState, activePrompt);
 
         try {
-            const eventHandler = new CodexEventHandler(this.connection, sessionState);
-            const approvalHandler = new CodexApprovalHandler(this.connection, sessionState, activePrompt.signal);
-            const elicitationHandler = new CodexElicitationHandler(
+            const turn = await CodexTurn.prepare(
                 this.connection,
+                this.codexAcpClient,
                 sessionState,
                 this.clientCapabilities,
+                operation => this.runWithProcessCheck(operation),
                 activePrompt.signal,
             );
-            await this.codexAcpClient.subscribeToSessionEvents(params.sessionId,
-                async (event) => {
-                    await elicitationHandler.handleNotification(event);
-                    return eventHandler.handleNotification(event);
-                },
-                approvalHandler,
-                elicitationHandler);
 
             if (activePrompt.signal.aborted) {
                 return this.cancelledPromptResponse(sessionState);
@@ -1938,7 +1929,6 @@ export class CodexAcpServer {
                 onTurnStarted: (turnId, threadId) => {
                     const turn = {threadId, turnId};
                     activePrompt.currentTurn = turn;
-                    sessionState.rolloutAvailable = true;
                     if (this.promptShouldStop(params.sessionId, activePrompt)) {
                         this.interruptLateStartedTurn(turn);
                         return;
@@ -1975,16 +1965,12 @@ export class CodexAcpServer {
             }
             if (commandResult.handled) {
                 logger.log("Prompt handled by a command");
-                await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
+                await turn.drain();
                 if (commandResult.turnCompleted?.turn.status === "interrupted") {
                     await this.notifyConversationInterrupted(params.sessionId);
                     return this.cancelledPromptResponse(sessionState);
                 }
-                const error = eventHandler.getFailure();
-                if (error) {
-                    // noinspection ExceptionCaughtLocallyJS
-                    throw error;
-                }
+                turn.throwIfFailed();
                 return {
                     stopReason: "end_turn",
                     usage: this.buildPromptUsage(sessionState.lastTokenUsage),
@@ -1996,50 +1982,22 @@ export class CodexAcpServer {
                 return this.cancelledPromptResponse(sessionState);
             }
 
-            const modelId = ModelId.fromString(sessionState.currentModelId);
-            const modelLacksReasoning = sessionState.supportedReasoningEfforts.length > 0
-                && sessionState.supportedReasoningEfforts.every(e => e.reasoningEffort === "none");
-
-            const disableSummary = sessionState.account?.type === "apiKey" || modelLacksReasoning;
-            if (disableSummary) {
-                logger.log("Disable reasoning.summary", {
-                    sessionId: params.sessionId,
-                    reason: sessionState.account?.type === "apiKey" ? "API key" : "model lacks reasoning"
-                });
-            }
-
-            if (!sessionState.supportedInputModalities.includes("image") && params.prompt.some(b => b.type === "image")) {
-                throw RequestError.invalidRequest("The current model does not support image input");
-            }
-            const agentMode = sessionState.agentMode;
-            const serviceTier = resolveFastServiceTier(
-                sessionState.fastModeEnabled,
-                sessionState.currentModelSupportsFast,
-            );
             ensurePendingTurnStart();
-            const sendPromptPromise = this.runWithProcessCheck(
-                () => this.codexAcpClient.sendPrompt(
-                    params,
-                    agentMode,
-                    modelId,
-                    serviceTier,
-                    disableSummary,
-                    sessionState.cwd,
-                    sessionState.additionalDirectories,
-                    (turnId) => {
-                        const turn = {threadId: params.sessionId, turnId};
-                        activePrompt.currentTurn = turn;
-                        sessionState.rolloutAvailable = true;
-                        if (this.promptShouldStop(params.sessionId, activePrompt)) {
-                            this.interruptLateStartedTurn(turn);
-                            return;
-                        }
-                        sessionState.currentTurnId = turnId;
-                        pendingTurnStart?.resolve(turnId);
-                        onTurnStarted?.();
-                    },
-                    () => this.promptShouldStop(params.sessionId, activePrompt),
-                ));
+            const sendPromptPromise = turn.send(
+                params,
+                (turnId) => {
+                    const startedTurn = {threadId: params.sessionId, turnId};
+                    activePrompt.currentTurn = startedTurn;
+                    if (this.promptShouldStop(params.sessionId, activePrompt)) {
+                        this.interruptLateStartedTurn(startedTurn);
+                        return;
+                    }
+                    sessionState.currentTurnId = turnId;
+                    pendingTurnStart?.resolve(turnId);
+                    onTurnStarted?.();
+                },
+                () => this.promptShouldStop(params.sessionId, activePrompt),
+            );
             void sendPromptPromise.catch((err) => {
                 if (this.activePrompts.get(params.sessionId) !== activePrompt) {
                     logger.error(`Prompt for cancelled session ${params.sessionId} failed after prompt returned`, err);
@@ -2055,18 +2013,14 @@ export class CodexAcpServer {
                 return this.cancelledPromptResponse(sessionState);
             }
 
-            await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
+            await turn.drain();
 
             if (turnCompleted.turn.status === "interrupted") {
                 await this.notifyConversationInterrupted(params.sessionId);
                 return this.cancelledPromptResponse(sessionState);
             }
 
-            const error = eventHandler.getFailure();
-            if (error) {
-                // noinspection ExceptionCaughtLocallyJS
-                throw error;
-            }
+            turn.throwIfFailed();
 
             await this.publishFallbackSessionTitle(
                 sessionState,

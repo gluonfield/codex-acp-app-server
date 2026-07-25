@@ -51,8 +51,7 @@ The adapter advertises ACP auth methods during initialization. Clients can authe
 - `CODEX_API_KEY` - API key used when the API-key auth method is selected. Takes precedence over `OPENAI_API_KEY`.
 - `OPENAI_API_KEY` - fallback API key used when the API-key auth method is selected.
 - `CODEX_PATH` - run a specific Codex executable instead of the bundled package dependency.
-- `CODEX_CONFIG` - JSON object merged into the Codex session config.
-- `MODEL_PROVIDER` - model provider to pass to Codex for new sessions.
+- `CODEX_CONFIG` - JSON object merged into the Codex session config, including `model_provider`.
 - `DEFAULT_AUTH_REQUEST` - ACP auth request JSON used when Codex requires authentication.
 - `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `agent`, or `agent-full-access`.
 - `NO_BROWSER` - hide browser-based ChatGPT auth when set.
@@ -65,7 +64,7 @@ The `gluonfield/codex-acp-app-server` fork keeps Codex App Server as the runtime
 
 - side-chat output is routed to the parent ACP session with `_meta.codex.sideChat`;
 - custom-provider context, modality, and reasoning metadata is carried without fallback guesses;
-- native subagent activity also exposes `_meta.codex.providerSubagent`;
+- native subagent activity stays in the official `_meta.codex` shapes for Jaz to translate at its client boundary;
 - explicit non-OpenAI providers do not advertise or clear the user's shared Codex account credentials.
 
 GitHub release archives contain the adapter and the exact `@openai/codex` runtime pinned by this package.

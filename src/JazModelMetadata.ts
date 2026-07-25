@@ -5,11 +5,11 @@ export const JAZ_MODEL_METADATA_ENV = "JAZ_CODEX_MODEL_METADATA";
 
 export interface JazModelMetadata {
     id: string;
-    displayName: string;
-    description: string;
+    displayName: string | null;
+    description: string | null;
     contextWindow: number;
-    inputModalities: InputModality[];
-    reasoningEfforts: ReasoningEffort[];
+    inputModalities: InputModality[] | null;
+    reasoningEfforts: ReasoningEffort[] | null;
     defaultReasoningEffort: ReasoningEffort | null;
 }
 
@@ -26,25 +26,20 @@ export function readJazModelMetadata(env: NodeJS.ProcessEnv = process.env): JazM
     if (!isRecord(value)) throw invalidMetadata("expected an object");
 
     const id = requiredString(value, "id");
-    const displayName = optionalString(value, "display_name") ?? id;
-    const description = optionalString(value, "description") ?? "";
+    const displayName = optionalString(value, "display_name");
+    const description = optionalString(value, "description");
     const contextWindow = value["context_window"];
-    if (!Number.isSafeInteger(contextWindow) || (contextWindow as number) <= 0) {
+    if (typeof contextWindow !== "number" || !Number.isSafeInteger(contextWindow) || contextWindow <= 0) {
         throw invalidMetadata("context_window must be a positive integer");
     }
-    const inputModalities = stringArray(value, "input_modalities");
-    for (const modality of inputModalities) {
-        if (modality !== "text" && modality !== "image" && modality !== "audio") {
-            throw invalidMetadata(`unsupported input modality ${JSON.stringify(modality)}`);
-        }
-    }
-    const reasoningEfforts = stringArray(value, "reasoning_efforts");
+    const inputModalities = optionalInputModalities(value);
+    const reasoningEfforts = optionalStringArray(value, "reasoning_efforts");
     const defaultReasoningEffort = optionalString(value, "default_reasoning_effort");
-    if (reasoningEfforts.length > 0
+    if (reasoningEfforts !== null && reasoningEfforts.length > 0
         && (defaultReasoningEffort === null || !reasoningEfforts.includes(defaultReasoningEffort))) {
         throw invalidMetadata("default_reasoning_effort must be one of reasoning_efforts");
     }
-    if (reasoningEfforts.length === 0 && defaultReasoningEffort !== null) {
+    if ((reasoningEfforts === null || reasoningEfforts.length === 0) && defaultReasoningEffort !== null) {
         throw invalidMetadata("default_reasoning_effort requires reasoning_efforts");
     }
 
@@ -52,8 +47,8 @@ export function readJazModelMetadata(env: NodeJS.ProcessEnv = process.env): JazM
         id,
         displayName,
         description,
-        contextWindow: contextWindow as number,
-        inputModalities: inputModalities as InputModality[],
+        contextWindow,
+        inputModalities,
         reasoningEfforts,
         defaultReasoningEffort,
     };
@@ -61,19 +56,32 @@ export function readJazModelMetadata(env: NodeJS.ProcessEnv = process.env): JazM
 
 export function mergeJazModelMetadata(models: Model[], metadata: JazModelMetadata | null): Model[] {
     if (metadata === null) return models;
+    const current = models.find(candidate => candidate.id === metadata.id);
+    if (current) {
+        const reasoningEfforts = metadata.reasoningEfforts === null
+            ? current.supportedReasoningEfforts
+            : toReasoningEfforts(metadata.reasoningEfforts);
+        return models.map(candidate => candidate.id === metadata.id ? {
+            ...candidate,
+            displayName: metadata.displayName ?? candidate.displayName,
+            description: metadata.description ?? candidate.description,
+            supportedReasoningEfforts: reasoningEfforts,
+            defaultReasoningEffort: metadata.defaultReasoningEffort
+                ?? (reasoningEfforts.length > 0 ? current.defaultReasoningEffort : ""),
+            inputModalities: metadata.inputModalities ?? current.inputModalities,
+        } : candidate);
+    }
+    if (metadata.inputModalities === null || metadata.reasoningEfforts === null) return models;
     const model: Model = {
         id: metadata.id,
         model: metadata.id,
         upgrade: null,
         upgradeInfo: null,
         availabilityNux: null,
-        displayName: metadata.displayName,
-        description: metadata.description,
+        displayName: metadata.displayName ?? metadata.id,
+        description: metadata.description ?? "",
         hidden: false,
-        supportedReasoningEfforts: metadata.reasoningEfforts.map(reasoningEffort => ({
-            reasoningEffort,
-            description: `${reasoningEffort} reasoning effort`,
-        })),
+        supportedReasoningEfforts: toReasoningEfforts(metadata.reasoningEfforts),
         defaultReasoningEffort: metadata.defaultReasoningEffort ?? "",
         inputModalities: metadata.inputModalities,
         supportsPersonality: false,
@@ -82,7 +90,14 @@ export function mergeJazModelMetadata(models: Model[], metadata: JazModelMetadat
         defaultServiceTier: null,
         isDefault: false,
     };
-    return [...models.filter(candidate => candidate.id !== metadata.id), model];
+    return [...models, model];
+}
+
+function toReasoningEfforts(reasoningEfforts: ReasoningEffort[]) {
+    return reasoningEfforts.map(reasoningEffort => ({
+        reasoningEffort,
+        description: `${reasoningEffort} reasoning effort`,
+    }));
 }
 
 function requiredString(value: Record<string, unknown>, key: string): string {
@@ -99,13 +114,28 @@ function optionalString(value: Record<string, unknown>, key: string): string | n
     return result.length > 0 ? result : null;
 }
 
-function stringArray(value: Record<string, unknown>, key: string): string[] {
+function optionalStringArray(value: Record<string, unknown>, key: string): string[] | null {
     const field = value[key];
-    if (field === undefined || field === null) return [];
-    if (!Array.isArray(field) || field.some(item => typeof item !== "string" || item.trim().length === 0)) {
+    if (field === undefined || field === null) return null;
+    if (!Array.isArray(field)) {
         throw invalidMetadata(`${key} must be an array of non-empty strings`);
     }
-    return [...new Set(field.map(item => (item as string).trim()))];
+    const values: string[] = [];
+    for (const item of field) {
+        if (typeof item !== "string" || item.trim().length === 0) {
+            throw invalidMetadata(`${key} must be an array of non-empty strings`);
+        }
+        values.push(item.trim());
+    }
+    return [...new Set(values)];
+}
+
+function optionalInputModalities(value: Record<string, unknown>): InputModality[] | null {
+    const values = optionalStringArray(value, "input_modalities");
+    return values?.map(modality => {
+        if (modality === "text" || modality === "image" || modality === "audio") return modality;
+        throw invalidMetadata(`unsupported input modality ${JSON.stringify(modality)}`);
+    }) ?? null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

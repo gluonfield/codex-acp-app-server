@@ -365,7 +365,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const extraRootsSetSpy = vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
         const listSkillsSpy = vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
         const threadStartSpy = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
-            thread: {id: "thread-id"} as any,
+            thread: {id: "thread-id", turns: []} as any,
             model: "gpt-5",
             reasoningEffort: "medium",
             serviceTier: null,
@@ -409,10 +409,12 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpClient = mockFixture.getCodexAcpClient();
         const codexAppServerClient = mockFixture.getCodexAppServerClient();
-        vi.spyOn(codexAppServerClient, "threadFork")
-            .mockRejectedValue(new Error("no rollout found for thread id parent"));
+        const threadFork = vi.spyOn(codexAppServerClient, "threadFork");
+        vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
+            thread: {id: "parent", turns: []} as any,
+        });
         const threadStart = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
-            thread: {id: "side-thread"} as any,
+            thread: {id: "side-thread", turns: []} as any,
             model: "gpt-5",
             reasoningEffort: "high",
         } as any);
@@ -431,7 +433,6 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 currentModelId: "gpt-5[high]",
                 cwd: "/workspace",
                 additionalDirectories: ["/workspace/extra"],
-                rolloutAvailable: false,
             }),
             "side instructions",
         )).resolves.toEqual({
@@ -452,6 +453,48 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 },
             }),
         }));
+        expect(threadFork).not.toHaveBeenCalled();
+    });
+
+    it('forks a side thread when the parent has history', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
+            thread: {id: "parent", turns: [{id: "turn"}]} as any,
+        });
+        const threadFork = vi.spyOn(codexAppServerClient, "threadFork").mockResolvedValue({
+            thread: {id: "side-thread", turns: []} as any,
+            model: "gpt-5",
+            reasoningEffort: "high",
+        } as any);
+        const threadStart = vi.spyOn(codexAppServerClient, "threadStart");
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({
+                id: "gpt-5",
+                defaultReasoningEffort: "high",
+                supportedReasoningEfforts: [{reasoningEffort: "high", description: "deep"}],
+            })],
+            nextCursor: null,
+        });
+
+        await expect(codexAcpClient.forkSideSession(
+            createTestSessionState({
+                sessionId: "parent",
+                currentModelId: "gpt-5[high]",
+            }),
+            "side instructions",
+        )).resolves.toEqual({
+            sessionId: "side-thread",
+            currentModelId: "gpt-5[high]",
+        });
+
+        expect(threadFork).toHaveBeenCalledWith({
+            threadId: "parent",
+            ephemeral: true,
+            developerInstructions: "side instructions",
+        });
+        expect(threadStart).not.toHaveBeenCalled();
     });
 
     it('applies ACP additional directories to resumed and loaded sessions explicitly', async () => {
@@ -462,13 +505,13 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
         vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
         const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue({
-            thread: {id: "thread-id"} as any,
+            thread: {id: "thread-id", turns: []} as any,
             model: "gpt-5",
             reasoningEffort: "medium",
             serviceTier: null,
         } as any);
         const threadReadSpy = vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
-            thread: {id: "thread-id"} as any,
+            thread: {id: "thread-id", turns: []} as any,
         });
         vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
             data: [createTestModel({id: "gpt-5"})],
@@ -527,7 +570,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 },
             });
             return {
-                thread: {id: threadId},
+                thread: {id: threadId, turns: []},
                 model: "gpt-5",
                 modelProvider: "openai",
                 reasoningEffort: "medium",
@@ -571,13 +614,13 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             },
         } as any);
         const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue({
-            thread: {id: "thread-id"} as any,
+            thread: {id: "thread-id", turns: []} as any,
             model: "gpt-5",
             reasoningEffort: "medium",
             serviceTier: null,
         } as any);
         vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
-            thread: {id: "thread-id"} as any,
+            thread: {id: "thread-id", turns: []} as any,
         });
         vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
             data: [createTestModel({id: "gpt-5"})],
@@ -617,7 +660,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             },
         } as any);
         const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue({
-            thread: {id: "thread-id"} as any,
+            thread: {id: "thread-id", turns: []} as any,
             model: "gpt-5",
             modelProvider: "azure",
             reasoningEffort: "medium",
@@ -693,7 +736,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             },
         } as any);
         const threadStartSpy = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
-            thread: {id: "thread-id"} as any,
+            thread: {id: "thread-id", turns: []} as any,
             model: "gpt-5",
             reasoningEffort: "medium",
             serviceTier: null,

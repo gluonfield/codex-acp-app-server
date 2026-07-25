@@ -84,12 +84,14 @@ export class CodexAcpClient {
     constructor(
         codexClient: CodexAppServerClient,
         codexConfig?: JsonObject,
-        modelProvider?: string,
         modelMetadata?: JazModelMetadata | null,
     ) {
         this.codexClient = codexClient;
         this.config = codexConfig ?? {};
-        this.modelProvider = modelProvider ?? null;
+        const modelProvider = this.config["model_provider"];
+        this.modelProvider = typeof modelProvider === "string" && modelProvider.trim()
+            ? modelProvider.trim()
+            : null;
         this.modelMetadata = modelMetadata ?? null;
         this.gatewayConfig = null;
     }
@@ -432,7 +434,6 @@ export class CodexAcpClient {
             cwd: string;
             additionalDirectories: string[];
             mcpServers: McpServer[];
-            rolloutAvailable: boolean;
         },
         developerInstructions: string,
     ): Promise<{sessionId: string; currentModelId: string}> {
@@ -441,21 +442,25 @@ export class CodexAcpClient {
             typeof configuredInstructions === "string" ? configuredInstructions : "",
             developerInstructions,
         ].filter(Boolean).join("\n\n");
+        const history = await this.codexClient.threadRead({
+            threadId: parent.sessionId,
+            includeTurns: true,
+        });
         let response;
-        try {
+        if (history.thread.turns.length > 0) {
             response = await this.codexClient.threadFork({
                 threadId: parent.sessionId,
                 ephemeral: true,
                 developerInstructions: instructions,
             });
-        } catch (error) {
-            if (parent.rolloutAvailable || !missingRollout(error)) throw error;
+        } else {
             const model = ModelId.fromString(parent.currentModelId);
             const config = await this.createSessionConfig(
                 parent.cwd,
                 parent.additionalDirectories,
                 parent.mcpServers,
             );
+            delete config["developer_instructions"];
             if (model.effort !== null) config["model_reasoning_effort"] = model.effort;
             response = await this.codexClient.threadStart({
                 config,
@@ -1016,10 +1021,6 @@ function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {
                 return null;
         }
     }).filter((block): block is UserInput => block !== null);
-}
-
-function missingRollout(error: unknown): boolean {
-    return error instanceof Error && error.message.includes("no rollout found for thread id");
 }
 
 function imageDataUrl(block: acp.ContentBlock & { type: "image" }): string {

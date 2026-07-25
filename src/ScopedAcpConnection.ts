@@ -6,7 +6,7 @@ export function scopedAcpConnection(
     sessionId: string,
     updateMeta: Record<string, unknown>,
 ): AcpClientConnection {
-    const notify = (async (method: unknown, params: unknown) => {
+    const notify = async <Params = unknown>(method: string, params?: Params): Promise<void> => {
         if (method === acp.methods.client.session.update && isRecord(params)) {
             const update = params["update"];
             return await connection.notify(
@@ -17,19 +17,23 @@ export function scopedAcpConnection(
                     update: isRecord(update)
                         ? mergeUpdateMeta(update as UpdateSessionEvent, updateMeta)
                         : update,
-                } as acp.SessionNotification,
+                },
             );
         }
-        return await connection.notify(method as never, scopeSessionId(params, sessionId) as never);
-    }) as AcpClientConnection["notify"];
+        return await connection.notify(method, scopeSessionId(params, sessionId));
+    };
 
-    const request = (async (method: unknown, params: unknown, options?: acp.SendRequestOptions) => {
-        return await connection.request(
-            method as never,
-            scopeSessionId(params, sessionId) as never,
+    const request = async <Response = unknown, Params = unknown>(
+        method: string,
+        params?: Params,
+        options?: acp.SendRequestOptions,
+    ): Promise<Response> => {
+        return await connection.request<Response, unknown>(
+            method,
+            scopeSessionId(params, sessionId),
             options,
         );
-    }) as AcpClientConnection["request"];
+    };
 
     return {notify, request};
 }

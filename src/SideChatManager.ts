@@ -37,6 +37,7 @@ interface SideChat {
 interface SidePrompt {
     chat: SideChat;
     turnId: string | null;
+    cancelled: boolean;
 }
 
 interface ActiveSidePrompt {
@@ -94,6 +95,7 @@ export class SideChatManager {
         const prompt: SidePrompt = {
             chat,
             turnId: null,
+            cancelled: false,
         };
         const active: ActiveSidePrompt = {
             prompt,
@@ -208,7 +210,7 @@ export class SideChatManager {
             approvalHandler,
             elicitationHandler,
         );
-        if (signal?.aborted) return this.cancelled(state);
+        if (signal?.aborted || prompt.cancelled) return this.cancelled(state);
         if (!state.supportedInputModalities.includes("image")
             && request.prompt.some(block => block.type === "image")) {
             throw RequestError.invalidRequest("The current model does not support image input");
@@ -231,9 +233,9 @@ export class SideChatManager {
                 turnId => {
                     prompt.turnId = turnId;
                     state.currentTurnId = turnId;
-                    if (signal?.aborted) void this.interruptPrompt(prompt);
+                    if (signal?.aborted || prompt.cancelled) void this.interruptPrompt(prompt);
                 },
-                () => signal?.aborted ?? false,
+                () => prompt.cancelled || (signal?.aborted ?? false),
             ));
             if (completed === null) return this.cancelled(state);
             await this.codex.waitForSessionNotifications(state.sessionId);
@@ -256,6 +258,7 @@ export class SideChatManager {
     }
 
     private async interruptPrompt(prompt: SidePrompt): Promise<void> {
+        prompt.cancelled = true;
         if (prompt.turnId === null) return;
         const turnId = prompt.turnId;
         prompt.turnId = null;

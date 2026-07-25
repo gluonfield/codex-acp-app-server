@@ -426,7 +426,7 @@
             },
             "providerSubagent": {
               "provider": "codex",
-              "id": "/root/test_audit",
+              "id": "thread-child-1",
               "thread_id": "thread-child-1",
               "name": "test_audit",
               "task": "test_audit",

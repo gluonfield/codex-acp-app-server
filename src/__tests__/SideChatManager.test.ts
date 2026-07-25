@@ -125,4 +125,37 @@ describe("SideChatManager", () => {
         await closing;
         expect(codex.closeSession).toHaveBeenCalledOnce();
     });
+
+    it("cancels a side prompt before Codex returns its turn id", async () => {
+        let finishSubscription!: () => void;
+        const subscription = new Promise<void>(resolve => {
+            finishSubscription = resolve;
+        });
+        const codex = {
+            forkSideSession: vi.fn().mockResolvedValue({
+                sessionId: "side-thread",
+                currentModelId: "model-id[effort]",
+            }),
+            subscribeToSessionEvents: vi.fn().mockReturnValue(subscription),
+            sendPrompt: vi.fn(),
+        } as unknown as CodexAcpClient;
+        const manager = new SideChatManager(
+            {notify: vi.fn(), request: vi.fn()} as unknown as AcpClientConnection,
+            codex,
+            () => null,
+            operation => operation(),
+        );
+        const parent = createTestSessionState({sessionId: "parent"});
+        const prompting = manager.prompt({
+            sessionId: "parent",
+            prompt: [{type: "text", text: "what changed?"}],
+        }, parent, {id: "side-1", command: "btw", parentSessionId: "parent"});
+        await vi.waitFor(() => expect(codex.subscribeToSessionEvents).toHaveBeenCalledOnce());
+
+        await manager.cancelParent("parent");
+        finishSubscription();
+
+        await expect(prompting).resolves.toMatchObject({stopReason: "cancelled"});
+        expect(codex.sendPrompt).not.toHaveBeenCalled();
+    });
 });

@@ -23,7 +23,7 @@
             },
             "providerSubagent": {
               "provider": "codex",
-              "id": "/root/weather_research",
+              "id": "thread-paris",
               "thread_id": "thread-paris",
               "name": "weather_research",
               "task": "weather_research",

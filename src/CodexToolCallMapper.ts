@@ -503,7 +503,7 @@ export function createSubAgentActivityUpdate(
                 },
                 providerSubagent: {
                     provider: "codex",
-                    id: item.agentPath,
+                    id: item.agentThreadId,
                     thread_id: item.agentThreadId,
                     name,
                     task: name,

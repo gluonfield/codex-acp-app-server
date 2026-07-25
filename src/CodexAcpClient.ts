@@ -242,10 +242,7 @@ export class CodexAcpClient {
 
     async authRequired(): Promise<Boolean> {
         if (!this.usesOpenAiAccountAuth()) {
-            // The authentication is already in progress:
-            // the gateway config is set during the authentication request processing.
-            // We assume that custom model providers will handle authentication themselves,
-            // so Codex will not need to require it.
+            // Custom providers authenticate through their configured environment.
             return false;
         }
 

@@ -58,4 +58,71 @@ describe("SideChatManager", () => {
         await manager.closeParent("parent");
         expect(codex.closeSession).toHaveBeenCalledWith("side-thread");
     });
+
+    it("does not fork the same side chat twice while its fork is starting", async () => {
+        let resolveFork!: (value: {sessionId: string; currentModelId: string}) => void;
+        const fork = new Promise<{sessionId: string; currentModelId: string}>(resolve => {
+            resolveFork = resolve;
+        });
+        const codex = {
+            forkSideSession: vi.fn().mockReturnValue(fork),
+            subscribeToSessionEvents: vi.fn().mockResolvedValue(undefined),
+            sendPrompt: vi.fn().mockResolvedValue({
+                turn: {id: "turn", status: "completed"},
+            }),
+            waitForSessionNotifications: vi.fn().mockResolvedValue(undefined),
+            closeSession: vi.fn().mockResolvedValue(undefined),
+            turnInterrupt: vi.fn().mockResolvedValue(undefined),
+        } as unknown as CodexAcpClient;
+        const manager = new SideChatManager(
+            {notify: vi.fn(), request: vi.fn()} as unknown as AcpClientConnection,
+            codex,
+            () => null,
+            operation => operation(),
+        );
+        const parent = createTestSessionState({sessionId: "parent"});
+        const scope = {id: "side-1", command: "btw", parentSessionId: "parent"};
+        const request = {
+            sessionId: "parent",
+            prompt: [{type: "text" as const, text: "what changed?"}],
+        };
+
+        const first = manager.prompt(request, parent, scope);
+        const second = manager.prompt(request, parent, scope);
+        const rejected = expect(second).rejects.toThrow("Side chat is already running");
+        resolveFork({sessionId: "side-thread", currentModelId: "model-id[effort]"});
+
+        await Promise.all([first, rejected]);
+        expect(codex.forkSideSession).toHaveBeenCalledOnce();
+    });
+
+    it("closes a side fork that is still starting when its parent closes", async () => {
+        let resolveFork!: (value: {sessionId: string; currentModelId: string}) => void;
+        const fork = new Promise<{sessionId: string; currentModelId: string}>(resolve => {
+            resolveFork = resolve;
+        });
+        const codex = {
+            forkSideSession: vi.fn().mockReturnValue(fork),
+            closeSession: vi.fn().mockResolvedValue(undefined),
+        } as unknown as CodexAcpClient;
+        const manager = new SideChatManager(
+            {notify: vi.fn(), request: vi.fn()} as unknown as AcpClientConnection,
+            codex,
+            () => null,
+            operation => operation(),
+        );
+        const parent = createTestSessionState({sessionId: "parent"});
+        const scope = {id: "side-1", command: "btw", parentSessionId: "parent"};
+        const prompting = manager.prompt({
+            sessionId: "parent",
+            prompt: [{type: "text", text: "what changed?"}],
+        }, parent, scope);
+        const closing = manager.closeParent("parent");
+
+        resolveFork({sessionId: "side-thread", currentModelId: "model-id[effort]"});
+
+        await expect(prompting).resolves.toMatchObject({stopReason: "cancelled"});
+        await closing;
+        expect(codex.closeSession).toHaveBeenCalledOnce();
+    });
 });

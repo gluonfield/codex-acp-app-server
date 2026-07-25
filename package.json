@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "1.1.7-jaz.2",
+  "version": "1.1.7-jaz.3",
   "description": "",
   "main": "dist/index.js",
   "bin": {
@@ -42,13 +42,13 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p examples/tsconfig.json",
     "codex-test": "tsx .claude/skills/run-codex/scripts/run-codex-test.ts"
   },
-  "homepage": "https://github.com/agentclientprotocol/codex-acp#readme",
+  "homepage": "https://github.com/gluonfield/codex-acp-app-server#readme",
   "bugs": {
-    "url": "https://github.com/agentclientprotocol/codex-acp/issues"
+    "url": "https://github.com/gluonfield/codex-acp-app-server/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentclientprotocol/codex-acp.git"
+    "url": "git+https://github.com/gluonfield/codex-acp-app-server.git"
   },
   "keywords": [],
   "author": "Agent Client Protocol",

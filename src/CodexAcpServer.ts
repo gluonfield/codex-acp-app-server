@@ -621,6 +621,7 @@ export class CodexAcpServer {
                 this.activePrompts.delete(params.sessionId);
                 this.steeringQueues.delete(params.sessionId);
             }
+            this.sideChats.finishParentClose(params.sessionId);
             this.endSessionCloseFence(params.sessionId);
         }
 

@@ -361,6 +361,7 @@ export class CodexAcpClient {
         onSubscribed?.();
         const codexModels = await this.fetchAvailableModels();
         const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
+        this.codexClient.setThreadHasHistory(response.thread.id, response.thread.turns.length > 0);
         return {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
@@ -389,6 +390,10 @@ export class CodexAcpClient {
         });
         const codexModels = await this.fetchAvailableModels();
         const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
+        this.codexClient.setThreadHasHistory(
+            response.thread.id,
+            historyResponse.thread.turns.length > 0,
+        );
         return {
             sessionId: request.sessionId,
             currentModelId: currentModelId,
@@ -442,12 +447,8 @@ export class CodexAcpClient {
             typeof configuredInstructions === "string" ? configuredInstructions : "",
             developerInstructions,
         ].filter(Boolean).join("\n\n");
-        const history = await this.codexClient.threadRead({
-            threadId: parent.sessionId,
-            includeTurns: true,
-        });
         let response;
-        if (history.thread.turns.length > 0) {
+        if (this.codexClient.threadHasHistory(parent.sessionId)) {
             response = await this.codexClient.threadFork({
                 threadId: parent.sessionId,
                 ephemeral: true,

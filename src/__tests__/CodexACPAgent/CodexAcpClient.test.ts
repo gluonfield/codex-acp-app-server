@@ -410,9 +410,6 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const codexAcpClient = mockFixture.getCodexAcpClient();
         const codexAppServerClient = mockFixture.getCodexAppServerClient();
         const threadFork = vi.spyOn(codexAppServerClient, "threadFork");
-        vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
-            thread: {id: "parent", turns: []} as any,
-        });
         const threadStart = vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
             thread: {id: "side-thread", turns: []} as any,
             model: "gpt-5",
@@ -460,9 +457,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpClient = mockFixture.getCodexAcpClient();
         const codexAppServerClient = mockFixture.getCodexAppServerClient();
-        vi.spyOn(codexAppServerClient, "threadRead").mockResolvedValue({
-            thread: {id: "parent", turns: [{id: "turn"}]} as any,
-        });
+        mockFixture.sendServerNotification(createTurnCompletedNotification("parent", "turn"));
         const threadFork = vi.spyOn(codexAppServerClient, "threadFork").mockResolvedValue({
             thread: {id: "side-thread", turns: []} as any,
             model: "gpt-5",
@@ -505,7 +500,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
         vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
         const threadResumeSpy = vi.spyOn(codexAppServerClient, "threadResume").mockResolvedValue({
-            thread: {id: "thread-id", turns: []} as any,
+            thread: {id: "thread-id", turns: [{id: "turn-id"}]} as any,
             model: "gpt-5",
             reasoningEffort: "medium",
             serviceTier: null,
@@ -523,12 +518,14 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             cwd: "/workspace",
             additionalDirectories: ["/workspace/resume-extra"],
         });
+        expect(codexAppServerClient.threadHasHistory("thread-id")).toBe(true);
         const loaded = await codexAcpClient.loadSession({
             sessionId: "load-id",
             cwd: "/workspace",
             additionalDirectories: ["/workspace/load-extra"],
             mcpServers: [],
         });
+        expect(codexAppServerClient.threadHasHistory("thread-id")).toBe(false);
 
         expect(resumed.additionalDirectories).toEqual(["/workspace/resume-extra"]);
         expect(loaded.additionalDirectories).toEqual(["/workspace/load-extra"]);

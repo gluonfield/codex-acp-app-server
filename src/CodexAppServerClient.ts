@@ -148,6 +148,7 @@ export class CodexAppServerClient {
     private readonly threadGoalClearedCaptures = new Map<string, Set<() => void>>();
     private readonly threadSettings = new Map<string, ThreadSettings>();
     private readonly staleTurnIds = new Map<string, Set<string>>();
+    private readonly threadsWithHistory = new Set<string>();
 
     constructor(connection: MessageConnection) {
         this.connection = connection;
@@ -262,6 +263,19 @@ export class CodexAppServerClient {
         this.notificationHandlers.delete(threadId);
         this.approvalHandlers.delete(threadId);
         this.elicitationHandlers.delete(threadId);
+        this.threadsWithHistory.delete(threadId);
+    }
+
+    setThreadHasHistory(threadId: string, hasHistory: boolean): void {
+        if (hasHistory) {
+            this.threadsWithHistory.add(threadId);
+        } else {
+            this.threadsWithHistory.delete(threadId);
+        }
+    }
+
+    threadHasHistory(threadId: string): boolean {
+        return this.threadsWithHistory.has(threadId);
     }
 
     async initialize(params: InitializeParams): Promise<InitializeResponse> {
@@ -695,6 +709,7 @@ export class CodexAppServerClient {
     }
 
     private recordTurnCompleted(event: TurnCompletedNotification): void {
+        this.threadsWithHistory.add(event.threadId);
         const threadResolvers = this.pendingTurnCompletionResolvers.get(event.threadId);
         const resolve = threadResolvers?.get(event.turn.id);
         if (resolve) {

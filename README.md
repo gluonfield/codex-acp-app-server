@@ -15,7 +15,7 @@ Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol]
 - Subagent launches as standard ACP tool calls, with Codex thread identity and activity details in namespaced `_meta.codex.subagent` metadata.
 - Ephemeral side conversations backed by Codex `thread/fork`, selected with `_meta.codex.sideChat`.
 - Client-provided MCP servers over command-based stdio config and HTTP transport.
-- Slash commands: `/status`, `/mcp`, `/skills`, `/review`, `/review-branch`, `/review-commit`, `/compact`, and `/logout`, as well as configured skills.
+- Slash commands: `/status`, `/mcp`, `/skills`, `/review`, `/review-branch`, `/review-commit`, `/side`, `/btw`, `/init`, `/compact`, `/goal`, and `/logout`, as well as configured skills.
 
 ## Installation
 

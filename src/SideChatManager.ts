@@ -1,5 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {RequestError} from "@agentclientprotocol/sdk";
+import {randomUUID} from "node:crypto";
 import type {AcpClientConnection} from "./ACPSessionConnection";
 import {CodexAcpClient} from "./CodexAcpClient";
 import type {SessionState} from "./CodexAcpServer";
@@ -18,6 +19,11 @@ export interface SideChatScope {
     id: string;
     command: string;
     parentSessionId: string;
+}
+
+export interface SideChatPrompt {
+    request: acp.PromptRequest;
+    scope: SideChatScope;
 }
 
 interface SideChat {
@@ -251,20 +257,39 @@ export class SideChatManager {
     }
 }
 
-export function parseSideChatScope(request: acp.PromptRequest): SideChatScope | null {
+export function parseSideChatPrompt(request: acp.PromptRequest): SideChatPrompt | null {
     const meta = record(request._meta);
     const codex = record(meta?.["codex"]);
     const side = record(codex?.["sideChat"]);
-    if (!side) return null;
-
-    const id = stringField(side, "id");
-    if (!id) throw RequestError.invalidParams(undefined, "Side chat id is required");
-    const command = stringField(side, "command") ?? "side";
-    const parentSessionId = stringField(side, "parentSessionId") ?? request.sessionId;
-    if (parentSessionId !== request.sessionId) {
-        throw RequestError.invalidParams(undefined, "Side chat parentSessionId does not match sessionId");
+    if (side) {
+        const id = stringField(side, "id");
+        if (!id) throw RequestError.invalidParams(undefined, "Side chat id is required");
+        const command = stringField(side, "command") ?? "side";
+        const parentSessionId = stringField(side, "parentSessionId") ?? request.sessionId;
+        if (parentSessionId !== request.sessionId) {
+            throw RequestError.invalidParams(undefined, "Side chat parentSessionId does not match sessionId");
+        }
+        return {request, scope: {id, command, parentSessionId}};
     }
-    return {id, command, parentSessionId};
+
+    const first = request.prompt[0];
+    if (first?.type !== "text") return null;
+    const match = /^\/(side|btw)(?:\s+([\s\S]*))?$/i.exec(first.text.trim());
+    if (!match) return null;
+    const question = match[2]?.trim();
+    if (!question) throw RequestError.invalidParams(undefined, `/${match[1]!.toLowerCase()} requires a question`);
+    const command = match[1]!.toLowerCase();
+    return {
+        request: {
+            ...request,
+            prompt: [{...first, text: question}, ...request.prompt.slice(1)],
+        },
+        scope: {
+            id: `side_${randomUUID()}`,
+            command,
+            parentSessionId: request.sessionId,
+        },
+    };
 }
 
 function stringField(value: Record<string, unknown>, key: string): string | null {

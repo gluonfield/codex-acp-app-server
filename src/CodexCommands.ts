@@ -13,6 +13,7 @@ import {
     DEFAULT_COLLABORATION_MODE,
     PLAN_COLLABORATION_MODE,
 } from "./CollaborationModeConfig";
+import {INIT_COMMAND_PROMPT} from "./InitCommandPrompt";
 
 type ParsedSlashCommand = {
     name: string;
@@ -145,6 +146,21 @@ export class CodexCommands {
                 input: { hint: "commit sha" }
             },
             {
+                name: "side",
+                description: "Start an ephemeral side conversation without changing the main thread.",
+                input: {hint: "question"}
+            },
+            {
+                name: "btw",
+                description: "Start an ephemeral side conversation without changing the main thread.",
+                input: {hint: "question"}
+            },
+            {
+                name: "init",
+                description: "Create an AGENTS.md file with instructions for Codex.",
+                input: null
+            },
+            {
                 name: "compact",
                 description: "Summarize conversation to avoid hitting the context limit.",
                 input: null
@@ -169,6 +185,12 @@ export class CodexCommands {
         return this.codexAcpClient.usesOpenAiAccountAuth()
             ? commands
             : commands.filter(command => command.name !== "logout");
+    }
+
+    preparePrompt(prompt: acp.ContentBlock[]): acp.ContentBlock[] {
+        return this.parseCommand(prompt)?.name === "init"
+            ? [{type: "text", text: INIT_COMMAND_PROMPT}]
+            : prompt;
     }
 
     private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {

@@ -1,10 +1,42 @@
 import {describe, expect, it, vi} from "vitest";
 import type {AcpClientConnection} from "../ACPSessionConnection";
 import type {CodexAcpClient} from "../CodexAcpClient";
-import {SideChatManager} from "../SideChatManager";
+import {parseSideChatPrompt, SideChatManager} from "../SideChatManager";
 import {createTestSessionState} from "./acp-test-utils";
 
 describe("SideChatManager", () => {
+    it("turns /side and /btw into isolated prompts", () => {
+        const parsed = parseSideChatPrompt({
+            sessionId: "parent",
+            prompt: [
+                {type: "text", text: "/BTW  what changed? "},
+                {type: "image", data: "image", mimeType: "image/png"},
+            ],
+        });
+
+        expect(parsed).toMatchObject({
+            request: {
+                sessionId: "parent",
+                prompt: [
+                    {type: "text", text: "what changed?"},
+                    {type: "image", data: "image", mimeType: "image/png"},
+                ],
+            },
+            scope: {
+                id: expect.stringMatching(/^side_/),
+                command: "btw",
+                parentSessionId: "parent",
+            },
+        });
+    });
+
+    it("rejects an empty side question", () => {
+        expect(() => parseSideChatPrompt({
+            sessionId: "parent",
+            prompt: [{type: "text", text: "/side"}],
+        })).toThrow("/side requires a question");
+    });
+
     it("uses one ephemeral fork for follow-up prompts and closes it with the parent", async () => {
         const codex = {
             forkSideSession: vi.fn().mockResolvedValue({

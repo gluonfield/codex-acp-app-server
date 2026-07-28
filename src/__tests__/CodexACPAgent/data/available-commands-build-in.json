@@ -57,6 +57,25 @@
             }
           },
           {
+            "name": "side",
+            "description": "Start an ephemeral side conversation without changing the main thread.",
+            "input": {
+              "hint": "question"
+            }
+          },
+          {
+            "name": "btw",
+            "description": "Start an ephemeral side conversation without changing the main thread.",
+            "input": {
+              "hint": "question"
+            }
+          },
+          {
+            "name": "init",
+            "description": "Create an AGENTS.md file with instructions for Codex.",
+            "input": null
+          },
+          {
             "name": "compact",
             "description": "Summarize conversation to avoid hitting the context limit.",
             "input": null

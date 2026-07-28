@@ -1470,6 +1470,22 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(mockFixture.getAcpConnectionDump([])).toBe("");
     });
 
+    it('rewrites /init to the AGENTS.md instruction', async () => {
+        const { mockFixture, turnStartSpy } = setupPromptFixture();
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{ type: "text", text: "/init" }],
+        });
+
+        expect(turnStartSpy).toHaveBeenCalledWith(expect.objectContaining({
+            input: [expect.objectContaining({
+                type: "text",
+                text: expect.stringMatching(/^Generate a file named AGENTS\.md/),
+            })],
+        }));
+    });
+
     it('handles review slash commands through Codex app server', async () => {
         const { mockFixture, turnStartSpy } = setupPromptFixture();
         const reviewStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "reviewStart")

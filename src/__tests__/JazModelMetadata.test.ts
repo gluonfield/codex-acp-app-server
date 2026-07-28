@@ -88,6 +88,26 @@ describe("Jaz model metadata", () => {
         expect(mergeJazModelMetadata([keep], metadata)).toEqual([keep]);
     });
 
+    it("preserves known empty reasoning efforts", () => {
+        const metadata = readJazModelMetadata({
+            [JAZ_MODEL_METADATA_ENV]: JSON.stringify({
+                id: "automatic",
+                context_window: 128_000,
+                input_modalities: ["text"],
+                reasoning_efforts: [],
+            }),
+        } as NodeJS.ProcessEnv);
+
+        expect(metadata?.reasoningEfforts).toEqual([]);
+        expect(mergeJazModelMetadata([], metadata)).toEqual([
+            expect.objectContaining({
+                id: "automatic",
+                supportedReasoningEfforts: [],
+                defaultReasoningEffort: "",
+            }),
+        ]);
+    });
+
     it("keeps missing reasoning effort unknown", () => {
         const modelId = ModelId.create("custom", null);
         expect(modelId.toString()).toBe("custom");

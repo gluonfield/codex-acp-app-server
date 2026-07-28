@@ -4,7 +4,6 @@ import {AgentMode} from "../../../AgentMode";
 import {legacySetSessionModel} from "../../../AcpExtensions";
 import {
     createAuthenticatedFixture,
-    createGatewayFixture,
     DEFAULT_TEST_MODEL_ID,
     describeE2E,
     OTHER_TEST_MODEL_ID,
@@ -24,15 +23,6 @@ describeE2E("E2E tests", () => {
 
     it("returns model response", async () => {
         fixture = await createAuthenticatedFixture();
-        const session = await fixture.createSession();
-        await fixture.expectPromptText(session.sessionId, "Reply with exactly integration-ok and nothing else.", (text) => {
-            expect(text.toLowerCase()).toContain("integration-ok");
-        });
-    });
-
-    it("returns model response when authenticated via gateway", async () => {
-        const apiKey = requireLiveApiKey();
-        fixture = await createGatewayFixture("https://api.openai.com/v1", {Authorization: `Bearer ${apiKey}`});
         const session = await fixture.createSession();
         await fixture.expectPromptText(session.sessionId, "Reply with exactly integration-ok and nothing else.", (text) => {
             expect(text.toLowerCase()).toContain("integration-ok");

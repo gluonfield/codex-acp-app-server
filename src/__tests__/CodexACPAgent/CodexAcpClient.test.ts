@@ -87,10 +87,10 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             "account/login/start",
             "account/read",
             "account/updated",
-            "thread/start",
             "model/list",
-            "thread/started",
+            "thread/start",
             "account/read",
+            "thread/started",
             "skills/list",
         ]);
         expect(loginRequest).toEqual({
@@ -203,57 +203,12 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(accountLoginSpy).not.toHaveBeenCalled();
     });
 
-    it('should authenticate with a gateway', async () => {
-        const gatewayFixture = createTestFixture();
-        const codexAcpAgent = gatewayFixture.getCodexAcpAgent();
-
-        await codexAcpAgent.initialize({
-            protocolVersion: 1,
-            clientCapabilities: {
-                auth: {
-                    _meta: {
-                        gateway: true,
-                    }
-                }
-            }
-        });
-        await gatewayFixture.getCodexAcpClient().logout();
-
-        const authRequest: CodexAuthRequest = {
-            methodId: "gateway",
-            _meta: {
-                "gateway": {
-                    baseUrl: "https://www.example.com",
-                    headers: {
-                        "Custom-Auth-Header": "TOKEN"
-                    }
-                }
-            }
-        };
-
-        await codexAcpAgent.authenticate(authRequest);
-        expect(await gatewayFixture.getCodexAcpClient().authRequired()).toBe(false);
-
-        const authenticatedResponse = await gatewayFixture.getCodexAcpAgent().extMethod("authentication/status", {});
-        expect(authenticatedResponse).toEqual({type: "gateway", name: "custom-gateway"});
-
-        await expect(codexAcpAgent.newSession({cwd: "", mcpServers: []}))
-            .rejects.toThrow("Codex did not return any models");
-    });
-
     it('should show account in /status for api key auth', async () => {
         const authFixture = createTestFixture();
         const codexAcpAgent = authFixture.getCodexAcpAgent();
 
         await codexAcpAgent.initialize({
             protocolVersion: 1,
-            clientCapabilities: {
-                auth: {
-                    _meta: {
-                        gateway: true,
-                    }
-                }
-            }
         });
         await authFixture.getCodexAcpClient().logout();
 
@@ -281,6 +236,22 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         await expect(codexAcpAgent.extMethod("authentication/logout", {})).resolves.toEqual({});
         expect(logoutSpy).toHaveBeenCalledWith({});
+    });
+
+    it('does not start a thread without an available model', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+        const threadStartSpy = vi.spyOn(codexAppServerClient, "threadStart");
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [],
+            nextCursor: null,
+        });
+
+        await expect(mockFixture.getCodexAcpClient().newSession({
+            cwd: "/workspace",
+            mcpServers: [],
+        })).rejects.toThrow("Codex did not return any models");
+        expect(threadStartSpy).not.toHaveBeenCalled();
     });
 
     it('prefetches session additional skill roots before thread start', async () => {
@@ -2968,59 +2939,6 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(codexAcpAgent.getSessionState(session2.sessionId)).toMatchObject({
             account: { type: "apiKey" },
             authConfigured: true,
-        });
-    });
-
-    it('does not overwrite OpenAI session auth state when gateway auth succeeds', async () => {
-        const mockFixture = createCodexMockTestFixture();
-        const codexAcpAgent = mockFixture.getCodexAcpAgent();
-        const codexAcpClient = mockFixture.getCodexAcpClient();
-        const model = createTestModel();
-        const currentModelId = ModelId.create(model.id, model.defaultReasoningEffort).toString();
-
-        vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
-        vi.spyOn(codexAcpClient, "getModelProvider").mockReturnValue(null);
-        const getAccountSpy = vi.spyOn(codexAcpClient, "getAccount")
-            .mockResolvedValue({
-                account: { type: "apiKey" },
-                requiresOpenaiAuth: false,
-            });
-        vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
-            sessionId: "openai-session",
-            currentModelId,
-            models: [model],
-            collaborationMode: "default",
-            modelProvider: "openai",
-            additionalDirectories: [],
-        });
-        const authenticateSpy = vi.spyOn(codexAcpClient, "authenticate").mockResolvedValue(true);
-
-        const session = await codexAcpAgent.newSession({cwd: "/workspace", mcpServers: []});
-        expect(codexAcpAgent.getSessionState(session.sessionId)).toMatchObject({
-            account: { type: "apiKey" },
-            authConfigured: true,
-            authProvider: "openai",
-        });
-
-        const gatewayAuthRequest: CodexAuthRequest = {
-            methodId: "gateway",
-            _meta: {
-                "gateway": {
-                    baseUrl: "https://www.example.com",
-                    headers: {
-                        "Custom-Auth-Header": "TOKEN",
-                    },
-                },
-            },
-        };
-        await codexAcpAgent.authenticate(gatewayAuthRequest);
-
-        expect(authenticateSpy).toHaveBeenCalledWith(gatewayAuthRequest);
-        expect(getAccountSpy).toHaveBeenCalledTimes(1);
-        expect(codexAcpAgent.getSessionState(session.sessionId)).toMatchObject({
-            account: { type: "apiKey" },
-            authConfigured: true,
-            authProvider: "openai",
         });
     });
 

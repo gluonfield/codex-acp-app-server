@@ -2,8 +2,8 @@ import * as acp from "@agentclientprotocol/sdk";
 import {RequestError, type SessionId, type SessionModeState} from "@agentclientprotocol/sdk";
 import {CodexEventHandler} from "./CodexEventHandler";
 import {CodexTurn} from "./CodexTurn";
-import {type CodexAuthRequest, getCodexAuthMethods, isCodexAuthRequest} from "./CodexAuthMethod";
-import {CodexAcpClient, type SessionMetadata, type SessionMetadataWithThread} from "./CodexAcpClient";
+import {type CodexAuthRequest, getCodexAuthMethods} from "./CodexAuthMethod";
+import {CodexAcpClient} from "./CodexAcpClient";
 import type {McpStartupResult} from "./CodexAppServerClient";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
 import type {InputModality, ReasoningEffort} from "./app-server";
@@ -90,6 +90,7 @@ import {
 } from "./ThreadGoalSnapshot";
 import {parseSideChatPrompt, SideChatManager} from "./SideChatManager";
 import {parsePromptCommand} from "./PromptCommand";
+import type {SessionMetadata, SessionMetadataWithThread} from "./CodexSessionMetadata";
 
 export interface SessionState {
     sessionId: string,
@@ -231,7 +232,6 @@ export class CodexAcpServer {
             },
             agentCapabilities: {
                 ...(accountAuth ? {auth: {logout: {}}} : {}),
-                providers: {},
                 loadSession: true,
                 promptCapabilities: {
                     embeddedContext: true,
@@ -250,7 +250,7 @@ export class CodexAcpServer {
                     sse: false
                 }
             },
-            authMethods: accountAuth ? getCodexAuthMethods(_params.clientCapabilities) : [],
+            authMethods: accountAuth ? getCodexAuthMethods() : [],
             _meta: {
                 steering: {
                     supported: true,
@@ -527,13 +527,6 @@ export class CodexAcpServer {
         return a === b;
     }
 
-    private getAuthProviderForAuthenticateRequest(request: acp.AuthenticateRequest): string | null {
-        if (isCodexAuthRequest(request) && request.methodId === "gateway") {
-            return "custom-gateway";
-        }
-        return null;
-    }
-
     async loadSession(params: acp.LoadSessionRequest): Promise<LegacyLoadSessionResponse> {
         logger.log("Loading session...", {sessionId: params.sessionId});
         const {
@@ -692,7 +685,7 @@ export class CodexAcpServer {
             logger.log("Authenticate request failed");
             throw RequestError.invalidParams();
         }
-        await this.refreshSessionsAuthState(this.getAuthProviderForAuthenticateRequest(_params));
+        await this.refreshSessionsAuthState(null);
         logger.log("Authenticate request completed");
         return { };
     }
@@ -702,20 +695,6 @@ export class CodexAcpServer {
         await this.runWithProcessCheck(() => this.codexAcpClient.logout());
         await this.refreshSessionsAuthState(null);
         logger.log("Logout request completed");
-    }
-
-    listProviders(_params: acp.ListProvidersRequest): acp.ListProvidersResponse {
-        return { providers: this.codexAcpClient.listProviders() };
-    }
-
-    setProvider(params: acp.SetProviderRequest): acp.SetProviderResponse {
-        this.codexAcpClient.setProvider(params);
-        return { };
-    }
-
-    disableProvider(params: acp.DisableProviderRequest): acp.DisableProviderResponse {
-        this.codexAcpClient.disableProvider(params);
-        return { };
     }
 
     private async refreshSessionsAuthState(authProvider: string | null): Promise<void> {

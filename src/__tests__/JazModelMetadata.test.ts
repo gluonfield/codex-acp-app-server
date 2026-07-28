@@ -1,11 +1,11 @@
 import {describe, expect, it} from "vitest";
 import {
     JAZ_MODEL_METADATA_ENV,
-    mergeJazModelMetadata,
+    modelFromJazMetadata,
     readJazModelMetadata,
+    resolveJazModelMetadata,
 } from "../JazModelMetadata";
 import {ModelId} from "../ModelId";
-import {createTestModel} from "./acp-test-utils";
 
 describe("Jaz model metadata", () => {
     it("parses exact custom-provider capabilities", () => {
@@ -43,69 +43,63 @@ describe("Jaz model metadata", () => {
         } as NodeJS.ProcessEnv)).toThrow("default_reasoning_effort must be one of reasoning_efforts");
     });
 
-    it("replaces only the matching catalog model", () => {
-        const keep = createTestModel({id: "keep"});
+    it("allows known reasoning efforts without a declared default", () => {
         const metadata = readJazModelMetadata({
             [JAZ_MODEL_METADATA_ENV]: JSON.stringify({
-                id: "custom",
-                display_name: "Custom",
+                id: "model",
                 context_window: 128_000,
                 input_modalities: ["text"],
+                reasoning_efforts: ["low", "high"],
             }),
         } as NodeJS.ProcessEnv);
 
-        const models = mergeJazModelMetadata([keep, createTestModel({id: "custom"})], metadata);
-
-        expect(models).toHaveLength(2);
-        expect(models[0]).toBe(keep);
-        expect(models[1]).toMatchObject({
-            id: "custom",
-            displayName: "Custom",
-            inputModalities: ["text"],
-            supportedReasoningEfforts: [{
-                reasoningEffort: "medium",
-                description: "Balanced",
-            }],
-            defaultReasoningEffort: "medium",
-        });
+        expect(metadata?.defaultReasoningEffort).toBeNull();
+        expect(resolveJazModelMetadata("custom", "model", metadata)?.defaultReasoningEffort).toBeNull();
     });
 
-    it("does not invent a model when provider capabilities are unknown", () => {
-        const keep = createTestModel({id: "keep"});
-        const metadata = readJazModelMetadata({
-            [JAZ_MODEL_METADATA_ENV]: JSON.stringify({
-                id: "custom",
-                context_window: 128_000,
-            }),
-        } as NodeJS.ProcessEnv);
-
-        expect(metadata).toMatchObject({
+    it("requires exact metadata for custom providers", () => {
+        expect(() => resolveJazModelMetadata("custom", "model", null))
+            .toThrow("requires exact metadata");
+        expect(() => resolveJazModelMetadata("custom", "other", {
+            id: "model",
             displayName: null,
             description: null,
-            inputModalities: null,
-            reasoningEfforts: null,
-        });
-        expect(mergeJazModelMetadata([keep], metadata)).toEqual([keep]);
+            contextWindow: 128_000,
+            inputModalities: ["text"],
+            reasoningEfforts: [],
+            defaultReasoningEffort: null,
+        })).toThrow("requires exact metadata");
+        expect(resolveJazModelMetadata("openai-api-key", undefined, null)).toBeNull();
+        expect(() => resolveJazModelMetadata(" openai ", "gpt-5", null))
+            .toThrow("custom model_provider must be a non-empty normalized string");
+        expect(() => resolveJazModelMetadata("openai", "gpt-5", {
+            id: "gpt-5",
+            displayName: null,
+            description: null,
+            contextWindow: 128_000,
+            inputModalities: ["text"],
+            reasoningEfforts: [],
+            defaultReasoningEffort: null,
+        })).toThrow("native model providers own their model metadata");
     });
 
     it("preserves known empty reasoning efforts", () => {
-        const metadata = readJazModelMetadata({
+        const metadata = resolveJazModelMetadata("custom", "automatic", readJazModelMetadata({
             [JAZ_MODEL_METADATA_ENV]: JSON.stringify({
                 id: "automatic",
                 context_window: 128_000,
                 input_modalities: ["text"],
                 reasoning_efforts: [],
             }),
-        } as NodeJS.ProcessEnv);
+        } as NodeJS.ProcessEnv));
 
-        expect(metadata?.reasoningEfforts).toEqual([]);
-        expect(mergeJazModelMetadata([], metadata)).toEqual([
-            expect.objectContaining({
-                id: "automatic",
-                supportedReasoningEfforts: [],
-                defaultReasoningEffort: "",
-            }),
-        ]);
+        if (metadata === null) throw new Error("expected exact model metadata");
+        expect(metadata.reasoningEfforts).toEqual([]);
+        expect(modelFromJazMetadata(metadata)).toMatchObject({
+            id: "automatic",
+            supportedReasoningEfforts: [],
+            defaultReasoningEffort: "",
+        });
     });
 
     it("keeps missing reasoning effort unknown", () => {

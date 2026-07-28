@@ -6,7 +6,7 @@ import {startCodexConnection} from "./CodexJsonRpcConnection";
 import {CodexAcpServer} from "./CodexAcpServer";
 import {createJsonStream} from "./StdUtils";
 import {isCodexAuthRequest} from "./CodexAuthMethod";
-import {CodexAcpClient, type JsonObject} from "./CodexAcpClient";
+import {CodexAcpClient} from "./CodexAcpClient";
 import {CodexAppServerClient} from "./CodexAppServerClient";
 import packageJson from "../package.json";
 import {logger} from "./Logger";
@@ -16,7 +16,8 @@ import {
     GOAL_CONTROL_METHOD, LEGACY_SET_SESSION_MODEL_METHOD,
     SESSION_STEERING_METHOD,
 } from "./AcpExtensions";
-import {readJazModelMetadata} from "./JazModelMetadata";
+import {readJazModelMetadata, resolveJazModelMetadata} from "./JazModelMetadata";
+import type {JsonObject} from "./JsonObject";
 
 const emptyExtensionParamsParser = z.preprocess(
     (params) => params ?? {},
@@ -67,8 +68,12 @@ function startAcpServer() {
     const codexPath = process.env["CODEX_PATH"];
     const configString = process.env["CODEX_CONFIG"];
     const authRequestString = process.env["DEFAULT_AUTH_REQUEST"];
-    const modelMetadata = readJazModelMetadata();
     const config: JsonObject = configString ? JSON.parse(configString) : {};
+    const modelMetadata = resolveJazModelMetadata(
+        config["model_provider"],
+        config["model"],
+        readJazModelMetadata(),
+    );
     if (modelMetadata !== null) config["model_context_window"] = modelMetadata.contextWindow;
     const parsedAuthRequest = authRequestString ? JSON.parse(authRequestString) : undefined;
     const defaultAuthRequest = parsedAuthRequest && isCodexAuthRequest(parsedAuthRequest) ? parsedAuthRequest : undefined;
@@ -139,9 +144,6 @@ function startAcpServer() {
         .onRequest(acp.methods.agent.session.setConfigOption, (ctx) => getAgent().setSessionConfigOption(ctx.params))
         .onRequest(acp.methods.agent.authenticate, (ctx) => getAgent().authenticate(ctx.params))
         .onRequest(acp.methods.agent.logout, (ctx) => getAgent().logout(ctx.params))
-        .onRequest(acp.methods.agent.providers.list, (ctx) => getAgent().listProviders(ctx.params))
-        .onRequest(acp.methods.agent.providers.set, (ctx) => getAgent().setProvider(ctx.params))
-        .onRequest(acp.methods.agent.providers.disable, (ctx) => getAgent().disableProvider(ctx.params))
         .onRequest(acp.methods.agent.session.prompt, (ctx) => getAgent().prompt(ctx.params, ctx.signal))
         .onNotification(acp.methods.agent.session.cancel, (ctx) => getAgent().cancel(ctx.params))
         .onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params))

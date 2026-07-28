@@ -42,7 +42,6 @@ describe('CodexACPAgent - initialize', () => {
                 auth: {
                     logout: {},
                 },
-                providers: {},
                 loadSession: true,
                 promptCapabilities: {
                     embeddedContext: true,
@@ -68,27 +67,6 @@ describe('CodexACPAgent - initialize', () => {
                 },
             },
         });
-    });
-
-    it('should advertise gateway auth when the client opts into gateway auth metadata', async () => {
-        const params: acp.InitializeRequest = {
-            protocolVersion: acp.PROTOCOL_VERSION,
-            clientCapabilities: {
-                auth: {
-                    _meta: {
-                        gateway: true,
-                    }
-                }
-            }
-        };
-
-        const result = await agent.initialize(params);
-
-        expect(result.authMethods).toEqual(expect.arrayContaining([
-            expect.objectContaining({
-                id: "gateway",
-            })
-        ]));
     });
 
     it('enables experimental thread settings without requesting attestation', async () => {
@@ -126,7 +104,7 @@ describe('CodexACPAgent - initialize', () => {
     });
 
     it('should not advertise ChatGPT auth when browser auth is disabled', () => {
-        const methodIds = getCodexAuthMethods(undefined, {NO_BROWSER: "1"} as NodeJS.ProcessEnv)
+        const methodIds = getCodexAuthMethods({NO_BROWSER: "1"} as NodeJS.ProcessEnv)
             .map((method) => method.id);
 
         expect(methodIds).not.toContain("chat-gpt");
@@ -162,18 +140,6 @@ describe('CodexACPAgent - initialize', () => {
             data: [createTestModel({id: "custom"})],
             nextCursor: null,
         });
-
-        const unknown = new CodexAcpClient(appServer, {model_provider: "openrouter"}, {
-            id: "custom",
-            displayName: null,
-            description: null,
-            contextWindow: 128_000,
-            inputModalities: null,
-            reasoningEfforts: null,
-            defaultReasoningEffort: null,
-        });
-        await expect(unknown.fetchAvailableModels()).resolves.toEqual([]);
-        expect(listModels).not.toHaveBeenCalled();
 
         const exact = new CodexAcpClient(appServer, {model_provider: "openrouter"}, {
             id: "custom",

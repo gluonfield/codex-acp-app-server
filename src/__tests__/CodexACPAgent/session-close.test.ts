@@ -6,7 +6,8 @@ import {
     type CodexMockTestFixture,
 } from "../acp-test-utils";
 import type {CodexAcpServer} from "../../CodexAcpServer";
-import type {CodexAcpClient, SessionMetadata} from "../../CodexAcpClient";
+import type {CodexAcpClient} from "../../CodexAcpClient";
+import type {SessionMetadata} from "../../CodexSessionMetadata";
 import type {McpStartupResult} from "../../CodexAppServerClient";
 import type {TurnStartResponse} from "../../app-server/v2";
 import type {McpServer} from "@agentclientprotocol/sdk";

@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from "vitest";
-import {createCodexMockTestFixture, createTestModel} from "../acp-test-utils";
+import {type CodexMockTestFixture, createCodexMockTestFixture, createTestModel} from "../acp-test-utils";
 import {ModelId} from "../../ModelId";
 
 describe("New session logout handling", () => {
@@ -9,6 +9,7 @@ describe("New session logout handling", () => {
         const codexAcpClient = fixture.getCodexAcpClient();
         const codexAppServerClient = fixture.getCodexAppServerClient();
         vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        exposeTestModel(fixture);
 
         const errorMessage = `Internal error: "failed to reload config: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."`;
         vi.spyOn(codexAppServerClient, "threadStart").mockRejectedValue(new Error(errorMessage));
@@ -28,6 +29,7 @@ describe("New session logout handling", () => {
         const codexAcpClient = fixture.getCodexAcpClient();
         const codexAppServerClient = fixture.getCodexAppServerClient();
         vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        exposeTestModel(fixture);
 
         const errorMessage = `Internal error: "failed to reload config: Failed to load cloud requirements (workspace-managed policies)."`;
         vi.spyOn(codexAppServerClient, "threadStart").mockRejectedValue(new Error(errorMessage));
@@ -47,6 +49,7 @@ describe("New session logout handling", () => {
         const codexAcpClient = fixture.getCodexAcpClient();
         const codexAppServerClient = fixture.getCodexAppServerClient();
         vi.spyOn(codexAcpClient, "authRequired").mockResolvedValue(false);
+        exposeTestModel(fixture);
         const logoutSpy = vi.spyOn(codexAcpClient, "logout").mockResolvedValue();
 
         const errorMessage = 'Internal error: "failed to reload config: filesystem path `/tmp` must be absolute, use `~/...`, or start with `:`"';
@@ -118,3 +121,10 @@ describe("New session logout handling", () => {
         });
     });
 });
+
+function exposeTestModel(fixture: CodexMockTestFixture): void {
+    vi.spyOn(fixture.getCodexAppServerClient(), "listModels").mockResolvedValue({
+        data: [createTestModel()],
+        nextCursor: null,
+    });
+}

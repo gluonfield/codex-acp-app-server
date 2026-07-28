@@ -71,32 +71,6 @@ export async function createAuthenticatedFixture(initialMode?: AgentMode, mcpSer
     }, extraEnv, mcpServers);
 }
 
-export async function createGatewayFixture(
-    baseUrl: string,
-    headers: Record<string, string>,
-): Promise<SpawnedAgentFixture> {
-    return await createSpawnedFixture(async (connection, authMethods) => {
-        if (!authMethods.some((method) => method.id === "gateway")) {
-            throw new Error("Gateway authentication is not available.");
-        }
-
-        await connection.authenticate({
-            methodId: "gateway",
-            _meta: {
-                gateway: {
-                    baseUrl,
-                    headers,
-                },
-            },
-        });
-
-        const authenticationStatus = await getAuthenticationStatus(connection);
-        if (authenticationStatus["type"] !== "gateway" || authenticationStatus["name"] !== "custom-gateway") {
-            throw new Error(`Unexpected authentication status: ${JSON.stringify(authenticationStatus)}`);
-        }
-    });
-}
-
 function buildClientCapabilities(): acp.ClientCapabilities {
     return {
         fs: {
@@ -104,11 +78,6 @@ function buildClientCapabilities(): acp.ClientCapabilities {
             writeTextFile: true,
         },
         terminal: true,
-        auth: {
-            _meta: {
-                gateway: true,
-            },
-        },
         _meta: {
             "terminal-auth": true,
         },

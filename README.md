@@ -8,11 +8,11 @@ Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol]
 
 ## Features
 
-- ChatGPT, API key, and client-provided custom gateway authentication.
+- ChatGPT and API key authentication.
 - Model, reasoning effort, fast mode, approval, and sandbox mode configuration.
 - Text prompts, embedded context, images, resource links, and additional workspace directories.
 - Shell command, file change, permission request, MCP tool call, terminal output, reasoning, plan, web search, image generation, image view, token usage, and review events.
-- Subagent launches as standard ACP tool calls, with Codex thread identity and activity details in namespaced `_meta.codex.subagent` metadata.
+- Subagent launches as standard ACP tool calls, with Codex thread identity and activity details in `_meta.codex.providerSubagents`.
 - Ephemeral side conversations backed by Codex `thread/fork`, selected with `_meta.codex.sideChat`.
 - Client-provided MCP servers over command-based stdio config and HTTP transport.
 - Slash commands: `/status`, `/mcp`, `/skills`, `/review`, `/review-branch`, `/review-commit`, `/side`, `/btw`, `/init`, `/compact`, `/goal`, and `/logout`, as well as configured skills.
@@ -44,7 +44,6 @@ The adapter advertises ACP auth methods during initialization. Clients can authe
 
 - ChatGPT login. Set `NO_BROWSER=1` to hide this method in remote or browserless environments.
 - API key via `CODEX_API_KEY` or `OPENAI_API_KEY`.
-- A custom OpenAI-compatible gateway, when the client opts in to the gateway auth capability.
 
 ## Runtime options
 

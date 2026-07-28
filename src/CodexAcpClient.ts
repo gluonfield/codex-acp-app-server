@@ -1,4 +1,4 @@
-import {CODEX_API_KEY_ENV_VAR, GatewayAuthMethod, isCodexAuthRequest, OPENAI_API_KEY_ENV_VAR} from "./CodexAuthMethod";
+import {CODEX_API_KEY_ENV_VAR, isCodexAuthRequest, OPENAI_API_KEY_ENV_VAR} from "./CodexAuthMethod";
 import type {EmbeddedResourceResource} from "@agentclientprotocol/sdk";
 import * as acp from "@agentclientprotocol/sdk";
 import {type McpServer, RequestError} from "@agentclientprotocol/sdk";
@@ -45,25 +45,11 @@ import type {AuthenticationStatusResponse} from "./AcpExtensions";
 import {createCodexCollaborationMode} from "./CollaborationModeConfig";
 import type {ModeKind} from "./app-server/ModeKind";
 import {
-    type JazModelMetadata,
-    mergeJazModelMetadata,
+    type ExactJazModelMetadata,
+    modelFromJazMetadata,
 } from "./JazModelMetadata";
-
-/**
- * Well-known provider id for the client-configurable custom LLM gateway.
- * This is the only provider exposed through the ACP `providers/*` methods and
- * the `gateway` auth method; it maps to a Codex `model_providers` entry.
- */
-export const CUSTOM_GATEWAY_PROVIDER_ID = "custom-gateway";
-const OPENAI_API_KEY_PROVIDER_ID = "openai-api-key";
-
-/**
- * ACP `LlmProtocol` values Codex can route through the custom gateway, mapped to
- * the Codex `wire_api`. Codex only supports the OpenAI Responses wire API here.
- */
-const SUPPORTED_GATEWAY_PROTOCOLS: Record<acp.LlmProtocol, WireApi> = {
-    openai: "responses",
-};
+import type {JsonObject} from "./JsonObject";
+import type {SessionMetadata, SessionMetadataWithThread} from "./CodexSessionMetadata";
 
 /**
  * API for accessing the Codex App Server using ACP requests.
@@ -73,8 +59,7 @@ export class CodexAcpClient {
     private readonly codexClient: CodexAppServerClient;
     private readonly config: JsonObject;
     private readonly modelProvider: string | null;
-    private readonly modelMetadata: JazModelMetadata | null;
-    private gatewayConfig: GatewayConfig | null;
+    private readonly modelMetadata: ExactJazModelMetadata | null;
     private pendingLoginCompleted: Promise<AccountLoginCompletedNotification> | null = null;
     private pendingAccountUpdated: Promise<AccountUpdatedNotification> | null = null;
     private readonly sessionNotificationQueues = new Map<string, Promise<void>>();
@@ -85,7 +70,7 @@ export class CodexAcpClient {
     constructor(
         codexClient: CodexAppServerClient,
         codexConfig?: JsonObject,
-        modelMetadata?: JazModelMetadata | null,
+        modelMetadata?: ExactJazModelMetadata | null,
     ) {
         this.codexClient = codexClient;
         this.config = codexConfig ?? {};
@@ -94,7 +79,6 @@ export class CodexAcpClient {
             ? modelProvider.trim()
             : null;
         this.modelMetadata = modelMetadata ?? null;
-        this.gatewayConfig = null;
     }
 
     private readonly defaultClientInfo: ClientInfo = {
@@ -124,13 +108,12 @@ export class CodexAcpClient {
         if (!isCodexAuthRequest(authRequest)) {
             throw RequestError.invalidRequest();
         }
-        if (!this.usesOpenAiAccountAuth() && authRequest.methodId !== "gateway") {
+        if (!this.usesOpenAiAccountAuth()) {
             throw RequestError.invalidRequest(
                 undefined,
                 `Codex account authentication is unavailable for model provider ${this.getModelProvider()}`,
             );
         }
-        this.gatewayConfig = null;
         switch (authRequest.methodId) {
             case "api-key": {
                 const apiKey = authRequest._meta?.["api-key"]?.apiKey ?? this.readApiKeyFromEnv();
@@ -149,20 +132,6 @@ export class CodexAcpClient {
                 const result = await loginCompletedPromise;
                 return result.success;
             }
-            case "gateway":
-                if (!authRequest._meta) throw RequestError.invalidRequest();
-
-                const gatewaySettings = authRequest._meta["gateway"];
-                if (!gatewaySettings) throw RequestError.invalidRequest();
-
-                this.applyGatewayConfig({
-                    baseUrl: gatewaySettings.baseUrl,
-                    apiType: GatewayAuthMethod._meta.gateway.protocol,
-                    headers: gatewaySettings.headers,
-                    providerName: gatewaySettings.providerName,
-                });
-
-                return true;
         }
     }
 
@@ -253,98 +222,6 @@ export class CodexAcpClient {
         return response.requiresOpenaiAuth && !response.account;
     }
 
-    /**
-     * Validates and stores custom gateway routing. Shared by the `gateway` auth
-     * method and the ACP `providers/set` method. Throws `invalid_params` for an
-     * unsupported protocol or a malformed base URL.
-     */
-    private applyGatewayConfig(params: {
-        baseUrl: string;
-        headers?: Record<string, string> | undefined;
-        providerName?: string | undefined;
-        apiType: acp.LlmProtocol;
-    }): void {
-        const apiType = params.apiType;
-        const wireApi = SUPPORTED_GATEWAY_PROTOCOLS[apiType];
-        if (!wireApi) {
-            throw RequestError.invalidParams(
-                {apiType},
-                `Unsupported provider apiType "${apiType}"; supported: ${Object.keys(SUPPORTED_GATEWAY_PROTOCOLS).join(", ")}`,
-            );
-        }
-        if (typeof params.baseUrl !== "string" || params.baseUrl.trim().length === 0) {
-            throw RequestError.invalidParams(undefined, "baseUrl must be a non-empty string");
-        }
-        const providerName = typeof params.providerName === "string" && params.providerName.trim().length > 0
-            ? params.providerName
-            : "User-provided gateway";
-        const headers: Record<string, string> = {
-            "X-Client-Feature-ID": "codex",
-            ...params.headers,
-        };
-
-        this.gatewayConfig = {
-            modelProvider: CUSTOM_GATEWAY_PROVIDER_ID,
-            config: {
-                name: providerName,
-                base_url: params.baseUrl,
-                http_headers: headers,
-                wire_api: wireApi,
-            },
-        };
-    }
-
-    /**
-     * `providers/list`: returns the single client-configurable custom gateway
-     * provider. `current` carries only non-secret routing (never headers), and is
-     * `null` when the provider is not configured/disabled.
-     */
-    listProviders(): acp.ProviderInfo[] {
-        const gatewayConfig = this.gatewayConfig;
-        const current: acp.ProviderCurrentConfig | null = gatewayConfig
-            ? {
-                apiType: gatewayApiTypeFromConfig(gatewayConfig),
-                baseUrl: gatewayConfig.config.base_url,
-            }
-            : null;
-        return [
-            {
-                providerId: CUSTOM_GATEWAY_PROVIDER_ID,
-                supported: Object.keys(SUPPORTED_GATEWAY_PROTOCOLS),
-                required: false,
-                current,
-            },
-        ];
-    }
-
-    /**
-     * `providers/set`: replaces the full configuration for the custom gateway
-     * provider. Rejects unknown provider ids with `invalid_params`.
-     */
-    setProvider(request: acp.SetProviderRequest): void {
-        if (request.providerId !== CUSTOM_GATEWAY_PROVIDER_ID) {
-            throw RequestError.invalidParams(
-                {providerId: request.providerId},
-                `Unknown providerId "${request.providerId}"; only "${CUSTOM_GATEWAY_PROVIDER_ID}" is configurable`,
-            );
-        }
-        this.applyGatewayConfig({
-            apiType: request.apiType,
-            baseUrl: request.baseUrl,
-            headers: request.headers,
-        });
-    }
-
-    /**
-     * `providers/disable`: disables the custom gateway provider. Disabling an
-     * unknown provider id is idempotent success (RFD behavior §7).
-     */
-    disableProvider(request: acp.DisableProviderRequest): void {
-        if (request.providerId === CUSTOM_GATEWAY_PROVIDER_ID) {
-            this.gatewayConfig = null;
-        }
-    }
-
     async getAccount(): Promise<GetAccountResponse> {
         return this.codexClient.accountRead({refreshToken: false});
     }
@@ -411,16 +288,19 @@ export class CodexAcpClient {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
         await this.refreshSkills(request.cwd, additionalDirectories);
 
+        const [config, codexModels] = await Promise.all([
+            this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers),
+            this.fetchAvailableModels(),
+        ]);
+        if (codexModels.length === 0) {
+            throw new Error("Codex did not return any models");
+        }
         const response = await this.codexClient.threadStart({
-            config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers),
+            config,
             modelProvider: this.getModelProvider(),
             cwd: request.cwd,
         });
 
-        const codexModels = await this.fetchAvailableModels();
-        if (codexModels.length === 0) {
-            throw new Error("Codex did not return any models");
-        }
         const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
         return {
             sessionId: response.thread.id,
@@ -568,7 +448,7 @@ export class CodexAcpClient {
     ): Promise<JsonObject> {
         const sessionRoots = [projectPath, ...additionalDirectories];
         const mergedConfig = {
-            ...mergeGatewayConfig(this.config, this.gatewayConfig),
+            ...this.config,
             projects: Object.fromEntries(sessionRoots.map(root => [root, {
                 trust_level: "trusted",
             }])),
@@ -613,7 +493,7 @@ export class CodexAcpClient {
     }
 
     getModelProvider(): string | null {
-        return this.gatewayConfig?.modelProvider ?? this.modelProvider;
+        return this.modelProvider;
     }
 
     usesOpenAiAccountAuth(): boolean {
@@ -621,17 +501,12 @@ export class CodexAcpClient {
         return provider === null || provider === "openai";
     }
 
-    private usesNativeModelCatalog(): boolean {
-        const provider = this.getModelProvider();
-        return provider === null || provider === "openai" || provider === OPENAI_API_KEY_PROVIDER_ID;
-    }
-
     getModelContextWindow(modelId: string): number | null {
         return this.modelMetadata?.id === modelId ? this.modelMetadata.contextWindow : null;
     }
 
     private async getResumeModelProvider(): Promise<string> {
-        // Prefer an explicit/gateway provider, then the provider persisted in Codex config.
+        // Prefer an explicit provider, then the provider persisted in Codex config.
         // Keep OpenAI as the final fallback for ChatGPT-authenticated sessions without a configured provider.
         return (await this.getCurrentModelProvider()) ?? "openai";
     }
@@ -906,11 +781,6 @@ export class CodexAcpClient {
             updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
         });
 
-        if (listResponse.data.length === 0) {
-            const diagnostics = await this.runSessionListDiagnostics();
-            logger.log("Session list diagnostics", diagnostics);
-        }
-
         let sessions = listResponse.data.map(mapThreadToSession);
         if (requestedCwd) {
             const filtered = listResponse.data
@@ -945,58 +815,19 @@ export class CodexAcpClient {
     }
 
     async fetchAvailableModels(): Promise<Model[]> {
-        const models: Model[] = [];
-        if (this.usesNativeModelCatalog()) {
-            let cursor: string | null = null;
-            do {
-                const response = await this.codexClient.listModels({cursor, limit: null});
-                models.push(...response.data);
-                cursor = response.nextCursor;
-            } while (cursor);
+        if (this.modelMetadata !== null) {
+            return [modelFromJazMetadata(this.modelMetadata)];
         }
-
-        return mergeJazModelMetadata(models, this.modelMetadata);
+        const models: Model[] = [];
+        let cursor: string | null = null;
+        do {
+            const response = await this.codexClient.listModels({cursor, limit: null});
+            models.push(...response.data);
+            cursor = response.nextCursor;
+        } while (cursor);
+        return models;
     }
 
-    private async runSessionListDiagnostics(): Promise<Record<string, unknown>> {
-        const [allProviders, archivedAllProviders, customGateway] = await Promise.all([
-            this.codexClient.threadList({}),
-            this.codexClient.threadList({archived: true}),
-            this.codexClient.threadList({modelProviders: [CUSTOM_GATEWAY_PROVIDER_ID]}),
-        ]);
-
-        return {
-            allProviders: {
-                count: allProviders.data.length,
-                nextCursor: allProviders.nextCursor ?? null,
-            },
-            archivedAllProviders: {
-                count: archivedAllProviders.data.length,
-                nextCursor: archivedAllProviders.nextCursor ?? null,
-            },
-            customGateway: {
-                count: customGateway.data.length,
-                nextCursor: customGateway.nextCursor ?? null,
-            },
-        };
-    }
-
-}
-
-export type JsonObject = { [key in string]?: JsonValue }
-
-export type SessionMetadata = {
-    sessionId: string,
-    currentModelId: string,
-    models: Model[],
-    collaborationMode: ModeKind,
-    modelProvider?: string | null,
-    currentServiceTier?: ServiceTier | null,
-    additionalDirectories: string[],
-}
-
-export type SessionMetadataWithThread = SessionMetadata & {
-    thread: Thread,
 }
 
 function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {
@@ -1066,18 +897,6 @@ function formatUriAsLink(name: string | null | undefined, uri: string): string {
 function shouldDeduplicateMcpConflicts(): boolean {
     const disabledByEnv = process.env["DISABLE_MCP_CONFIG_FILTERING"] === "true";
     return !disabledByEnv;
-}
-
-type WireApi = "responses";
-
-interface GatewayConfig {
-    modelProvider: string;
-    config: {
-        name: string,
-        base_url: string,
-        http_headers: Record<string, string>,
-        wire_api: WireApi
-    }
 }
 
 function readMetaAdditionalRoots(meta?: Record<string, unknown> | null): string[] | undefined {
@@ -1167,26 +986,4 @@ function arraysEqual(left: string[], right: string[]): boolean {
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
     return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function gatewayApiTypeFromConfig(gatewayConfig: GatewayConfig): acp.LlmProtocol {
-    const wireApi = gatewayConfig.config.wire_api;
-    const match = Object.entries(SUPPORTED_GATEWAY_PROTOCOLS).find(([, wire]) => wire === wireApi);
-    return match?.[0] ?? "openai";
-}
-
-function mergeGatewayConfig(config: JsonObject, gatewayConfig: GatewayConfig | null): JsonObject {
-    if (gatewayConfig !== null) {
-        const newConfig = {...config};
-        if (!newConfig["model_providers"] || typeof newConfig["model_providers"] !== 'object') {
-            newConfig["model_providers"] = {};
-        } else {
-            newConfig["model_providers"] = {...newConfig["model_providers"] as JsonObject};
-        }
-
-        newConfig["model_providers"][gatewayConfig.modelProvider] = gatewayConfig.config;
-        return newConfig;
-    } else {
-        return config;
-    }
 }

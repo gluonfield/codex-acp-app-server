@@ -13,6 +13,11 @@ export interface JazModelMetadata {
     defaultReasoningEffort: ReasoningEffort | null;
 }
 
+export interface ExactJazModelMetadata extends JazModelMetadata {
+    inputModalities: InputModality[];
+    reasoningEfforts: ReasoningEffort[];
+}
+
 export function readJazModelMetadata(env: NodeJS.ProcessEnv = process.env): JazModelMetadata | null {
     const raw = env[JAZ_MODEL_METADATA_ENV];
     if (!raw) return null;
@@ -36,7 +41,8 @@ export function readJazModelMetadata(env: NodeJS.ProcessEnv = process.env): JazM
     const reasoningEfforts = optionalStringArray(value, "reasoning_efforts");
     const defaultReasoningEffort = optionalString(value, "default_reasoning_effort");
     if (reasoningEfforts !== null && reasoningEfforts.length > 0
-        && (defaultReasoningEffort === null || !reasoningEfforts.includes(defaultReasoningEffort))) {
+        && defaultReasoningEffort !== null
+        && !reasoningEfforts.includes(defaultReasoningEffort)) {
         throw invalidMetadata("default_reasoning_effort must be one of reasoning_efforts");
     }
     if ((reasoningEfforts === null || reasoningEfforts.length === 0) && defaultReasoningEffort !== null) {
@@ -54,25 +60,39 @@ export function readJazModelMetadata(env: NodeJS.ProcessEnv = process.env): JazM
     };
 }
 
-export function mergeJazModelMetadata(models: Model[], metadata: JazModelMetadata | null): Model[] {
-    if (metadata === null) return models;
-    const current = models.find(candidate => candidate.id === metadata.id);
-    if (current) {
-        const reasoningEfforts = metadata.reasoningEfforts === null
-            ? current.supportedReasoningEfforts
-            : toReasoningEfforts(metadata.reasoningEfforts);
-        return models.map(candidate => candidate.id === metadata.id ? {
-            ...candidate,
-            displayName: metadata.displayName ?? candidate.displayName,
-            description: metadata.description ?? candidate.description,
-            supportedReasoningEfforts: reasoningEfforts,
-            defaultReasoningEffort: metadata.defaultReasoningEffort
-                ?? (reasoningEfforts.length > 0 ? current.defaultReasoningEffort : ""),
-            inputModalities: metadata.inputModalities ?? current.inputModalities,
-        } : candidate);
+function usesCodexNativeModelCatalog(modelProvider: unknown): boolean {
+    return modelProvider === undefined
+        || modelProvider === null
+        || modelProvider === ""
+        || modelProvider === "openai"
+        || modelProvider === "openai-api-key";
+}
+
+export function resolveJazModelMetadata(
+    modelProvider: unknown,
+    model: unknown,
+    metadata: JazModelMetadata | null,
+): ExactJazModelMetadata | null {
+    if (usesCodexNativeModelCatalog(modelProvider)) {
+        if (metadata !== null) {
+            throw invalidMetadata("native model providers own their model metadata");
+        }
+        return null;
     }
-    if (metadata.inputModalities === null || metadata.reasoningEfforts === null) return models;
-    const model: Model = {
+    if (typeof modelProvider !== "string" || modelProvider.trim() !== modelProvider) {
+        throw invalidMetadata("custom model_provider must be a non-empty normalized string");
+    }
+    if (typeof model !== "string" || model.trim() !== model || model.length === 0) {
+        throw invalidMetadata(`model_provider ${JSON.stringify(modelProvider)} requires an explicit model`);
+    }
+    if (!hasExactCapabilities(metadata) || metadata.id !== model) {
+        throw invalidMetadata(`model_provider ${JSON.stringify(modelProvider)} requires exact metadata for model ${JSON.stringify(model)}`);
+    }
+    return metadata;
+}
+
+export function modelFromJazMetadata(metadata: ExactJazModelMetadata): Model {
+    return {
         id: metadata.id,
         model: metadata.id,
         upgrade: null,
@@ -90,7 +110,6 @@ export function mergeJazModelMetadata(models: Model[], metadata: JazModelMetadat
         defaultServiceTier: null,
         isDefault: false,
     };
-    return [...models, model];
 }
 
 function toReasoningEfforts(reasoningEfforts: ReasoningEffort[]) {
@@ -136,6 +155,13 @@ function optionalInputModalities(value: Record<string, unknown>): InputModality[
         if (modality === "text" || modality === "image" || modality === "audio") return modality;
         throw invalidMetadata(`unsupported input modality ${JSON.stringify(modality)}`);
     }) ?? null;
+}
+
+function hasExactCapabilities(metadata: JazModelMetadata | null): metadata is ExactJazModelMetadata {
+    return metadata !== null
+        && metadata.inputModalities !== null
+        && metadata.inputModalities.length > 0
+        && metadata.reasoningEfforts !== null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

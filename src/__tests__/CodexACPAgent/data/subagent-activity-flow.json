@@ -16,11 +16,17 @@
         },
         "_meta": {
           "codex": {
-            "subagent": {
-              "threadId": "thread-paris",
-              "path": "/root/weather_research",
-              "activity": "started"
-            }
+            "providerSubagents": [
+              {
+                "provider": "codex",
+                "id": "thread-paris",
+                "thread_id": "thread-paris",
+                "name": "weather_research",
+                "task": "weather_research",
+                "status": "running",
+                "summary": "Spawned"
+              }
+            ]
           }
         }
       }

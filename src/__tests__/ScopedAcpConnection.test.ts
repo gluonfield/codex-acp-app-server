@@ -20,7 +20,7 @@ describe("scoped ACP connection", () => {
                 toolCallId: "tool",
                 title: "Work",
                 status: "in_progress",
-                _meta: {codex: {collaboration: {tool: "spawn"}}},
+                _meta: {codex: {providerSubagents: [{id: "agent-1"}]}},
             },
         });
 
@@ -29,7 +29,7 @@ describe("scoped ACP connection", () => {
             update: expect.objectContaining({
                 _meta: {
                     codex: {
-                        collaboration: {tool: "spawn"},
+                        providerSubagents: [{id: "agent-1"}],
                         sideChat: {id: "side-1", threadId: "fork"},
                     },
                 },

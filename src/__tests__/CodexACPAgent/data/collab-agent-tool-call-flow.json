@@ -27,13 +27,17 @@
         },
         "_meta": {
           "codex": {
-            "collaboration": {
-              "tool": "spawnAgent",
-              "senderThreadId": "thread-main",
-              "receiverThreadIds": [
-                "thread-paris"
-              ]
-            }
+            "providerSubagents": [
+              {
+                "provider": "codex",
+                "id": "thread-paris",
+                "thread_id": "thread-paris",
+                "parent_id": "thread-main",
+                "status": "running",
+                "summary": "Checking weather",
+                "prompt": "Find the current weather in Paris."
+              }
+            ]
           }
         }
       }
@@ -68,13 +72,17 @@
         },
         "_meta": {
           "codex": {
-            "collaboration": {
-              "tool": "spawnAgent",
-              "senderThreadId": "thread-main",
-              "receiverThreadIds": [
-                "thread-paris"
-              ]
-            }
+            "providerSubagents": [
+              {
+                "provider": "codex",
+                "id": "thread-paris",
+                "thread_id": "thread-paris",
+                "parent_id": "thread-main",
+                "status": "completed",
+                "summary": "Spawned",
+                "prompt": "Find the current weather in Paris."
+              }
+            ]
           }
         }
       }

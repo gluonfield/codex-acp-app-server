@@ -32,6 +32,7 @@ import {
     createTerminalOutputMeta,
     type TerminalOutputMode,
 } from "./TerminalOutputMode";
+import {activitySubagent, collaborationSubagents} from "./ProviderSubagent";
 
 type CodexItemStatus = CommandExecutionStatus | PatchApplyStatus | McpToolCallStatus | DynamicToolCallStatus | CollabAgentToolCallStatus;
 type AcpToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -454,11 +455,7 @@ function createCollabAgentToolCallRawInput(item: CollabAgentToolCallItem) {
 function createCollabAgentToolCallMeta(item: CollabAgentToolCallItem) {
     return {
         codex: {
-            collaboration: {
-                tool: item.tool,
-                senderThreadId: item.senderThreadId,
-                receiverThreadIds: item.receiverThreadIds,
-            },
+            providerSubagents: collaborationSubagents(item),
         },
     };
 }
@@ -480,11 +477,7 @@ export function createSubAgentActivityUpdate(
         },
         _meta: {
             codex: {
-                subagent: {
-                    threadId: item.agentThreadId,
-                    path: item.agentPath,
-                    activity: item.kind,
-                },
+                providerSubagents: [activitySubagent(item)],
             },
         },
     };

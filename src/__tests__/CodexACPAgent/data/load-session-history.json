@@ -438,11 +438,17 @@
         },
         "_meta": {
           "codex": {
-            "subagent": {
-              "threadId": "thread-child-1",
-              "path": "/root/test_audit",
-              "activity": "started"
-            }
+            "providerSubagents": [
+              {
+                "provider": "codex",
+                "id": "thread-child-1",
+                "thread_id": "thread-child-1",
+                "name": "test_audit",
+                "task": "test_audit",
+                "status": "running",
+                "summary": "Spawned"
+              }
+            ]
           }
         }
       }

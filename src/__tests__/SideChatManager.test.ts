@@ -3,16 +3,18 @@ import type {AcpClientConnection} from "../ACPSessionConnection";
 import type {CodexAcpClient} from "../CodexAcpClient";
 import {parseSideChatPrompt, SideChatManager} from "../SideChatManager";
 import {createTestSessionState} from "./acp-test-utils";
+import {parsePromptCommand} from "../PromptCommand";
 
 describe("SideChatManager", () => {
     it("turns /side and /btw into isolated prompts", () => {
-        const parsed = parseSideChatPrompt({
+        const request = {
             sessionId: "parent",
             prompt: [
-                {type: "text", text: "/BTW  what changed? "},
-                {type: "image", data: "image", mimeType: "image/png"},
+                {type: "text" as const, text: "/BTW  what changed? "},
+                {type: "image" as const, data: "image", mimeType: "image/png"},
             ],
-        });
+        };
+        const parsed = parseSideChatPrompt(request, parsePromptCommand(request.prompt));
 
         expect(parsed).toMatchObject({
             request: {
@@ -31,10 +33,14 @@ describe("SideChatManager", () => {
     });
 
     it("rejects an empty side question", () => {
-        expect(() => parseSideChatPrompt({
+        const request = {
             sessionId: "parent",
-            prompt: [{type: "text", text: "/side"}],
-        })).toThrow("/side requires a question");
+            prompt: [{type: "text" as const, text: "/side"}],
+        };
+        expect(() => parseSideChatPrompt(
+            request,
+            parsePromptCommand(request.prompt),
+        )).toThrow("/side requires a question");
     });
 
     it("uses one ephemeral fork for follow-up prompts and closes it with the parent", async () => {

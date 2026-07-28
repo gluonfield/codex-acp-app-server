@@ -55,6 +55,7 @@ import {
  * the `gateway` auth method; it maps to a Codex `model_providers` entry.
  */
 export const CUSTOM_GATEWAY_PROVIDER_ID = "custom-gateway";
+const OPENAI_API_KEY_PROVIDER_ID = "openai-api-key";
 
 /**
  * ACP `LlmProtocol` values Codex can route through the custom gateway, mapped to
@@ -620,6 +621,11 @@ export class CodexAcpClient {
         return provider === null || provider === "openai";
     }
 
+    private usesNativeModelCatalog(): boolean {
+        const provider = this.getModelProvider();
+        return provider === null || provider === "openai" || provider === OPENAI_API_KEY_PROVIDER_ID;
+    }
+
     getModelContextWindow(modelId: string): number | null {
         return this.modelMetadata?.id === modelId ? this.modelMetadata.contextWindow : null;
     }
@@ -940,13 +946,14 @@ export class CodexAcpClient {
 
     async fetchAvailableModels(): Promise<Model[]> {
         const models: Model[] = [];
-        let cursor: string | null = null;
-
-        do {
-            const response = await this.codexClient.listModels({cursor, limit: null});
-            models.push(...response.data);
-            cursor = response.nextCursor;
-        } while (cursor);
+        if (this.usesNativeModelCatalog()) {
+            let cursor: string | null = null;
+            do {
+                const response = await this.codexClient.listModels({cursor, limit: null});
+                models.push(...response.data);
+                cursor = response.nextCursor;
+            } while (cursor);
+        }
 
         return mergeJazModelMetadata(models, this.modelMetadata);
     }

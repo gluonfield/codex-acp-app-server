@@ -8,6 +8,7 @@ import {CodexTurn} from "./CodexTurn";
 import {scopedAcpConnection} from "./ScopedAcpConnection";
 import {toPromptUsage} from "./TokenCount";
 import {logger} from "./Logger";
+import type {PromptCommand} from "./PromptCommand";
 
 const SIDE_DEVELOPER_INSTRUCTIONS = `You are in a side conversation, not the main thread.
 
@@ -257,7 +258,10 @@ export class SideChatManager {
     }
 }
 
-export function parseSideChatPrompt(request: acp.PromptRequest): SideChatPrompt | null {
+export function parseSideChatPrompt(
+    request: acp.PromptRequest,
+    promptCommand: PromptCommand | null,
+): SideChatPrompt | null {
     const meta = record(request._meta);
     const codex = record(meta?.["codex"]);
     const side = record(codex?.["sideChat"]);
@@ -272,21 +276,20 @@ export function parseSideChatPrompt(request: acp.PromptRequest): SideChatPrompt 
         return {request, scope: {id, command, parentSessionId}};
     }
 
+    if (promptCommand?.name !== "side" && promptCommand?.name !== "btw") return null;
+    if (!promptCommand.rest) {
+        throw RequestError.invalidParams(undefined, `/${promptCommand.name} requires a question`);
+    }
     const first = request.prompt[0];
     if (first?.type !== "text") return null;
-    const match = /^\/(side|btw)(?:\s+([\s\S]*))?$/i.exec(first.text.trim());
-    if (!match) return null;
-    const question = match[2]?.trim();
-    if (!question) throw RequestError.invalidParams(undefined, `/${match[1]!.toLowerCase()} requires a question`);
-    const command = match[1]!.toLowerCase();
     return {
         request: {
             ...request,
-            prompt: [{...first, text: question}, ...request.prompt.slice(1)],
+            prompt: [{...first, text: promptCommand.rest}, ...request.prompt.slice(1)],
         },
         scope: {
             id: `side_${randomUUID()}`,
-            command,
+            command: promptCommand.name,
             parentSessionId: request.sessionId,
         },
     };

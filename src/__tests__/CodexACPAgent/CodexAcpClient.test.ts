@@ -237,11 +237,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         const authenticatedResponse = await gatewayFixture.getCodexAcpAgent().extMethod("authentication/status", {});
         expect(authenticatedResponse).toEqual({type: "gateway", name: "custom-gateway"});
 
-        const newSessionResponse = await codexAcpAgent.newSession({cwd: "", mcpServers: []});
-        expect(newSessionResponse.sessionId).toBeDefined();
+        await expect(codexAcpAgent.newSession({cwd: "", mcpServers: []}))
+            .rejects.toThrow("Codex did not return any models");
     });
 
-    it('should show account in /status for api key auth and hide it for gateway auth', async () => {
+    it('should show account in /status for api key auth', async () => {
         const authFixture = createTestFixture();
         const codexAcpAgent = authFixture.getCodexAcpAgent();
 
@@ -271,28 +271,6 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         const apiKeyStatusDump = authFixture.getAcpConnectionDump([]);
         expect(apiKeyStatusDump).toContain("**Account:** API key configured");
-
-        await codexAcpAgent.authenticate({
-            methodId: "gateway",
-            _meta: {
-                "gateway": {
-                    baseUrl: "https://www.example.com",
-                    headers: {
-                        "Custom-Auth-Header": "TOKEN"
-                    }
-                }
-            }
-        });
-        const gatewaySession = await codexAcpAgent.newSession({cwd: "", mcpServers: []});
-        authFixture.clearAcpConnectionDump();
-
-        await codexAcpAgent.prompt({
-            sessionId: gatewaySession.sessionId,
-            prompt: [{ type: "text", text: "/status" }]
-        });
-
-        const gatewayStatusDump = authFixture.getAcpConnectionDump([]);
-        expect(gatewayStatusDump).toContain("**Account:** not logged in");
     });
 
     it('supports legacy authentication/logout ext method', async () => {
@@ -1475,15 +1453,34 @@ describe('ACP server test', { timeout: 40_000 }, () => {
 
         await mockFixture.getCodexAcpAgent().prompt({
             sessionId: "session-id",
-            prompt: [{ type: "text", text: "/init" }],
+            prompt: [
+                {type: "text", text: "/init"},
+                {type: "image", mimeType: "image/png", data: "abc123"},
+            ],
         });
 
         expect(turnStartSpy).toHaveBeenCalledWith(expect.objectContaining({
-            input: [expect.objectContaining({
-                type: "text",
-                text: expect.stringMatching(/^Generate a file named AGENTS\.md/),
-            })],
+            input: [
+                expect.objectContaining({
+                    type: "text",
+                    text: expect.stringMatching(/^Generate a file named AGENTS\.md/),
+                }),
+                {type: "image", url: "data:image/png;base64,abc123"},
+            ],
         }));
+    });
+
+    it('rejects arguments to /init without starting a model turn', async () => {
+        const {mockFixture, turnStartSpy} = setupPromptFixture();
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "/init later"}],
+        });
+
+        expect(turnStartSpy).not.toHaveBeenCalled();
+        const [event] = mockFixture.getAcpConnectionEvents([]);
+        expect(event?.args[0].update.content.text).toBe('Command "/init" requires no arguments.');
     });
 
     it('handles review slash commands through Codex app server', async () => {

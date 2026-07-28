@@ -14,14 +14,10 @@ import {
     PLAN_COLLABORATION_MODE,
 } from "./CollaborationModeConfig";
 import {INIT_COMMAND_PROMPT} from "./InitCommandPrompt";
-
-type ParsedSlashCommand = {
-    name: string;
-    rest: string;
-};
+import type {PromptCommand} from "./PromptCommand";
 
 export type CommandHandleResult =
-    | { handled: false }
+    | { handled: false, modelPrompt?: acp.ContentBlock[] }
     | { handled: true, turnCompleted?: TurnCompletedNotification };
 
 export type CommandHandleOptions = {
@@ -187,43 +183,31 @@ export class CodexCommands {
             : commands.filter(command => command.name !== "logout");
     }
 
-    preparePrompt(prompt: acp.ContentBlock[]): acp.ContentBlock[] {
-        return this.parseCommand(prompt)?.name === "init"
-            ? [{type: "text", text: INIT_COMMAND_PROMPT}]
-            : prompt;
-    }
-
-    private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {
-        const firstBlock = prompt[0];
-        if (!firstBlock || firstBlock.type != "text") return null;
-
-        const text = firstBlock.text.trim();
-        if (!text.startsWith("/")) return null;
-
-        const commandText = text.slice(1).trim();
-        if (commandText.length === 0) return null;
-
-        const [name] = commandText.split(/\s+/);
-        if (!name) return null;
-
-        return {
-            name: name.toLowerCase(),
-            rest: commandText.slice(name.length).trim(),
-        };
-    }
-
     async tryHandleCommand(
+        command: PromptCommand | null,
         prompt: acp.ContentBlock[],
         sessionState: SessionState,
         options: CommandHandleOptions = {},
     ): Promise<CommandHandleResult> {
-        const command = this.parseCommand(prompt);
         if (command === null) return { handled: false };
         const commandName = command.name;
         if (commandName.startsWith("$")) return { handled: false };
 
         const sessionId = sessionState.sessionId;
         switch (commandName) {
+            case "init": {
+                if (command.rest.length > 0) {
+                    await this.sendCommandUsageMessage(commandName, "no arguments", sessionId);
+                    return {handled: true};
+                }
+                const first = prompt[0];
+                return {
+                    handled: false,
+                    modelPrompt: first?.type === "text"
+                        ? [{...first, text: INIT_COMMAND_PROMPT}, ...prompt.slice(1)]
+                        : prompt,
+                };
+            }
             case "plan": {
                 if (command.rest.length > 0) {
                     await this.sendCommandUsageMessage(commandName, "no arguments", sessionId);

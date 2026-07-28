@@ -6,6 +6,7 @@ import {getCodexAuthMethods} from "../../CodexAuthMethod";
 import {CodexAcpClient} from "../../CodexAcpClient";
 import {CodexAppServerClient} from "../../CodexAppServerClient";
 import packageJson from "../../../package.json";
+import {createTestModel} from "../acp-test-utils";
 
 describe('CodexACPAgent - initialize', () => {
     let agent: CodexAcpServer;
@@ -152,5 +153,54 @@ describe('CodexACPAgent - initialize', () => {
         await expect(client.logout()).rejects.toThrow(
             "Codex logout is unavailable for model provider openrouter",
         );
+    });
+
+    it('does not inherit OpenAI model capabilities for a custom provider', async () => {
+        const mocks = createMockConnections();
+        const appServer = new CodexAppServerClient(mocks.mockCodexConnection);
+        const listModels = vi.spyOn(appServer, "listModels").mockResolvedValue({
+            data: [createTestModel({id: "custom"})],
+            nextCursor: null,
+        });
+
+        const unknown = new CodexAcpClient(appServer, {model_provider: "openrouter"}, {
+            id: "custom",
+            displayName: null,
+            description: null,
+            contextWindow: 128_000,
+            inputModalities: null,
+            reasoningEfforts: null,
+            defaultReasoningEffort: null,
+        });
+        await expect(unknown.fetchAvailableModels()).resolves.toEqual([]);
+        expect(listModels).not.toHaveBeenCalled();
+
+        const exact = new CodexAcpClient(appServer, {model_provider: "openrouter"}, {
+            id: "custom",
+            displayName: "Custom",
+            description: null,
+            contextWindow: 128_000,
+            inputModalities: ["text"],
+            reasoningEfforts: ["high"],
+            defaultReasoningEffort: "high",
+        });
+        await expect(exact.fetchAvailableModels()).resolves.toEqual([
+            expect.objectContaining({
+                id: "custom",
+                inputModalities: ["text"],
+                supportedReasoningEfforts: [{
+                    reasoningEffort: "high",
+                    description: "high reasoning effort",
+                }],
+                defaultReasoningEffort: "high",
+            }),
+        ]);
+        expect(listModels).not.toHaveBeenCalled();
+
+        const openAiApiKey = new CodexAcpClient(appServer, {model_provider: "openai-api-key"});
+        await expect(openAiApiKey.fetchAvailableModels()).resolves.toEqual([
+            expect.objectContaining({id: "custom"}),
+        ]);
+        expect(listModels).toHaveBeenCalledOnce();
     });
 });

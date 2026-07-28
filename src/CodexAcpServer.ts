@@ -89,6 +89,7 @@ import {
     toThreadGoalSnapshot,
 } from "./ThreadGoalSnapshot";
 import {parseSideChatPrompt, SideChatManager} from "./SideChatManager";
+import {parsePromptCommand} from "./PromptCommand";
 
 export interface SessionState {
     sessionId: string,
@@ -1891,11 +1892,11 @@ export class CodexAcpServer {
         if (this.sessionIsClosing(params.sessionId)) {
             return this.cancelledPromptResponse(sessionState);
         }
-        const sideChat = parseSideChatPrompt(params);
+        const promptCommand = parsePromptCommand(params.prompt);
+        const sideChat = parseSideChatPrompt(params, promptCommand);
         if (sideChat) {
             return await this.sideChats.prompt(sideChat.request, sessionState, sideChat.scope, signal);
         }
-        const modelPrompt = this.availableCommands.preparePrompt(params.prompt);
         sessionState.currentTurnId = null;
         sessionState.lastTokenUsage = null;
         const activePrompt = this.trackActivePrompt(params.sessionId);
@@ -1923,7 +1924,7 @@ export class CodexAcpServer {
                 return this.cancelledPromptResponse(sessionState);
             }
 
-            const commandPromise = this.availableCommands.tryHandleCommand(params.prompt, sessionState, {
+            const commandPromise = this.availableCommands.tryHandleCommand(promptCommand, params.prompt, sessionState, {
                 onTurnStartPending: () => {
                     ensurePendingTurnStart();
                 },
@@ -1983,6 +1984,7 @@ export class CodexAcpServer {
                 return this.cancelledPromptResponse(sessionState);
             }
 
+            const modelPrompt = commandResult.modelPrompt ?? params.prompt;
             ensurePendingTurnStart();
             const sendPromptPromise = turn.send(
                 {...params, prompt: modelPrompt},

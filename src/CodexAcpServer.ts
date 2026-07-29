@@ -1352,7 +1352,7 @@ export class CodexAcpServer {
         const threadUpdates: UpdateSessionEvent[] = [];
         for (const turn of thread.turns) {
             for (const item of turn.items) {
-                const updates = await this.createHistoryUpdates(item, sessionState);
+                const updates = await this.createHistoryUpdates(item, sessionState, turn.id);
                 threadUpdates.push(...updates);
             }
         }
@@ -1426,7 +1426,11 @@ export class CodexAcpServer {
         return normalized.length > 0 ? normalized : null;
     }
 
-    private async createHistoryUpdates(item: ThreadItem, sessionState: SessionState): Promise<UpdateSessionEvent[]> {
+    private async createHistoryUpdates(
+        item: ThreadItem,
+        sessionState: SessionState,
+        turnId: string,
+    ): Promise<UpdateSessionEvent[]> {
         switch (item.type) {
             case "userMessage":
                 return this.createUserMessageUpdates(item);
@@ -1445,7 +1449,7 @@ export class CodexAcpServer {
                 }];
             }
             case "reasoning":
-                return this.createReasoningUpdates(item);
+                return this.createReasoningUpdates(item, turnId);
             case "fileChange":
                 return [await createFileChangeUpdate(item)];
             case "commandExecution": {
@@ -1491,10 +1495,12 @@ export class CodexAcpServer {
         return updates;
     }
 
-    private createReasoningUpdates(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent[] {
+    private createReasoningUpdates(
+        item: ThreadItem & { type: "reasoning" },
+        turnId: string,
+    ): UpdateSessionEvent[] {
         const parts = item.summary.length > 0 ? item.summary : item.content;
-        const messageId = item.id;
-        return parts.map((text) => createAgentTextThoughtChunk(text, messageId));
+        return parts.map((text) => createAgentTextThoughtChunk(text, turnId));
     }
 
     private createWebSearchUpdate(

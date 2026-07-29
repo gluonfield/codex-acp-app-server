@@ -54,7 +54,7 @@
       "excludeTmpdirEnvVar": false,
       "excludeSlashTmp": false
     },
-    "summary": "auto",
+    "summary": null,
     "effort": "effort",
     "model": "model",
     "serviceTier": null

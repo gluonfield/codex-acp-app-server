@@ -69,6 +69,30 @@ describe("CodexEventHandler - reasoning events", () => {
                     },
                 },
             },
+            {
+                method: "item/reasoning/summaryTextDelta",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    itemId: "reasoning-2",
+                    summaryIndex: 0,
+                    delta: "Second thought",
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    completedAtMs: 0,
+                    item: {
+                        type: "reasoning",
+                        id: "reasoning-2",
+                        summary: ["Second completed summary should not duplicate"],
+                        content: [],
+                    },
+                },
+            },
         ];
 
         await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, notifications);

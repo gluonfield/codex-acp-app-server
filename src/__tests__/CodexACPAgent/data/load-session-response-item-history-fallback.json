@@ -154,7 +154,7 @@
       "sessionId": "session-legacy",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "item-reasoning-1",
+        "messageId": "turn-1",
         "content": {
           "type": "text",
           "text": "Need to inspect the directory."

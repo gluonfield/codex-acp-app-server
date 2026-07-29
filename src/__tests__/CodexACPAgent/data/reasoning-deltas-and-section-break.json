@@ -5,7 +5,7 @@
       "sessionId": "test-session-id",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "reasoning-1",
+        "messageId": "turn-1",
         "content": {
           "type": "text",
           "text": "First thought"
@@ -21,7 +21,7 @@
       "sessionId": "test-session-id",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "reasoning-1",
+        "messageId": "turn-1",
         "content": {
           "type": "text",
           "text": "\n\n"
@@ -37,10 +37,26 @@
       "sessionId": "test-session-id",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "reasoning-1",
+        "messageId": "turn-1",
         "content": {
           "type": "text",
           "text": "Raw reasoning detail"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "turn-1",
+        "content": {
+          "type": "text",
+          "text": "Second thought"
         }
       }
     }

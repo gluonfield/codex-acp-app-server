@@ -671,7 +671,7 @@ export class CodexAcpClient {
             input: input,
             approvalPolicy: agentMode.approvalPolicy,
             sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),
-            summary: disableSummary ? "none" : "auto",
+            summary: disableSummary ? "none" : null,
             effort: modelId.effort,
             model: modelId.model,
             serviceTier: serviceTier,

@@ -293,7 +293,7 @@ export class CodexEventHandler {
         event: ReasoningSummaryTextDeltaNotification | ReasoningTextDeltaNotification
     ): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return this.createAgentThoughtEvent(event.delta, event.itemId);
+        return createAgentTextThoughtChunk(event.delta, event.turnId);
     }
 
     private createPlanDeltaEvent(event: PlanDeltaNotification): UpdateSessionEvent | null {
@@ -307,11 +307,7 @@ export class CodexEventHandler {
 
     private createReasoningSectionBreakEvent(event: ReasoningSummaryPartAddedNotification): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return this.createAgentThoughtEvent("\n\n", event.itemId);
-    }
-
-    private createAgentThoughtEvent(text: string, messageId: string): UpdateSessionEvent {
-        return createAgentTextThoughtChunk(text, messageId);
+        return createAgentTextThoughtChunk("\n\n", event.turnId);
     }
 
     private async createItemEvent(event: ItemStartedNotification): Promise<UpdateSessionEvent | null> {
@@ -393,7 +389,7 @@ export class CodexEventHandler {
                 if (this.seenReasoningDeltaItemIds.delete(event.item.id)) {
                     return null;
                 }
-                return this.createCompletedReasoningEvent(event.item);
+                return this.createCompletedReasoningEvent(event.item, event.turnId);
             case "webSearch":
                 return createWebSearchCompleteUpdate(event.item);
             case "collabAgentToolCall":
@@ -430,13 +426,16 @@ export class CodexEventHandler {
         this.agentMessagePhases.set(item.id, item.phase);
     }
 
-    private createCompletedReasoningEvent(item: ThreadItem & { type: "reasoning" }): UpdateSessionEvent | null {
+    private createCompletedReasoningEvent(
+        item: ThreadItem & { type: "reasoning" },
+        turnId: string,
+    ): UpdateSessionEvent | null {
         const parts = item.summary.length > 0 ? item.summary : item.content;
         const text = parts.filter(part => part.length > 0).join("\n\n");
         if (text.length === 0) {
             return null;
         }
-        return this.createAgentThoughtEvent(text, item.id);
+        return createAgentTextThoughtChunk(text, turnId);
     }
 
     private createCompletedPlanEvent(

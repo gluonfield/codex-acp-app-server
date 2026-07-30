@@ -24,7 +24,7 @@ describe("CodexEventHandler - agent message events", () => {
         agentMode: AgentMode.DEFAULT_AGENT_MODE
     });
 
-    it("includes Codex message phase metadata on streamed agent message chunks", async () => {
+    it("maps commentary to thought and final answers to messages", async () => {
         const notifications: ServerNotification[] = [
             {
                 method: "item/started",

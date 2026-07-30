@@ -79,6 +79,7 @@ import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
 import {
     createCodexMessagePhaseMeta,
+    createCodexAgentChunk,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
     createUserMessageChunk,
@@ -1440,13 +1441,12 @@ export class CodexAcpServer {
             case "subAgentActivity":
                 return [createSubAgentActivityUpdate(item, "completed", "tool_call")];
             case "agentMessage": {
-                const meta = createCodexMessagePhaseMeta(item.phase);
-                return [{
-                    sessionUpdate: "agent_message_chunk",
-                    messageId: item.id,
-                    content: { type: "text", text: item.text },
-                    ...(meta ? { _meta: meta } : {}),
-                }];
+                return [createCodexAgentChunk({
+                    content: {type: "text", text: item.text},
+                    phase: item.phase,
+                    turnId,
+                    itemId: item.id,
+                })];
             }
             case "reasoning":
                 return this.createReasoningUpdates(item, turnId);

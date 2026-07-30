@@ -94,6 +94,13 @@ describe("CodexACPAgent - loadSession", () => {
                             memoryCitation: null,
                         },
                         {
+                            type: "agentMessage",
+                            id: "item-commentary-1",
+                            text: "Checking the restored session.",
+                            phase: "commentary",
+                            memoryCitation: null,
+                        },
+                        {
                             type: "reasoning",
                             id: "item-reason-1",
                             summary: ["Thinking..."],

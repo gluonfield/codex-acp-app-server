@@ -61,6 +61,7 @@ import { stripShellPrefix } from "./CommandUtils";
 import {createTerminalOutputMeta, type TerminalOutputMode} from "./TerminalOutputMode";
 import {
     createCodexMessagePhaseMeta,
+    createCodexAgentChunk,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
 } from "./ContentChunks";
@@ -248,7 +249,12 @@ export class CodexEventHandler {
 
     private async createTextEvent(event: AgentMessageDeltaNotification): Promise<UpdateSessionEvent> {
         const phase = this.agentMessagePhases.get(event.itemId) ?? null;
-        return createAgentTextMessageChunk(event.delta, event.itemId, createCodexMessagePhaseMeta(phase));
+        return createCodexAgentChunk({
+            content: {type: "text", text: event.delta},
+            phase,
+            turnId: event.turnId,
+            itemId: event.itemId,
+        });
     }
 
     private async createConfigWarningEvent(event: ConfigWarningNotification): Promise<UpdateSessionEvent> {

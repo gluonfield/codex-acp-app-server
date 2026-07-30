@@ -4,8 +4,8 @@
     {
       "sessionId": "test-session-id",
       "update": {
-        "sessionUpdate": "agent_message_chunk",
-        "messageId": "commentary-message",
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "turn-1",
         "content": {
           "type": "text",
           "text": "Checking the relevant event mapping."

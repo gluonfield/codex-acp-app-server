@@ -196,6 +196,27 @@
         "messageId": "turn-1",
         "content": {
           "type": "text",
+          "text": "Checking the restored session."
+        },
+        "_meta": {
+          "codex": {
+            "phase": "commentary"
+          }
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "turn-1",
+        "content": {
+          "type": "text",
           "text": "Thinking..."
         }
       }

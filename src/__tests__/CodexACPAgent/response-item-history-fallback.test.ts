@@ -55,21 +55,38 @@ describe("ResponseItemHistoryFallback", () => {
         expect(thoughtTexts(updates)).toEqual(["Need to inspect the directory."]);
     });
 
-    it("preserves assistant message phase metadata from response items", () => {
+    it("restores commentary as thought and final answers as messages", () => {
         const updates = parseResponseItemHistoryFallback(jsonl([
             {
                 type: "response_item",
                 payload: {
                     type: "message",
+                    id: "commentary-message",
+                    role: "assistant",
+                    content: [{ type: "output_text", text: "Checking the relevant event mapping." }],
+                    phase: "commentary",
+                    internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+                },
+            },
+            {
+                type: "response_item",
+                payload: {
+                    type: "message",
+                    id: "final-message",
                     role: "assistant",
                     content: [{ type: "output_text", text: "Final answer text." }],
                     phase: "final_answer",
+                    internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
                 },
             },
             functionCall("call-missing", "ls"),
             functionCallOutput("call-missing", "Chunk ID: missing\nProcess exited with code 0\nOutput:\nREADME.md\n"),
         ]), "terminal_output");
 
+        expect(thoughtTexts(updates)).toEqual([
+            "Checking the relevant event mapping.",
+        ]);
+        expect(thoughtMessageIds(updates)).toEqual(["turn-1"]);
         expect(agentMessageMetas(updates)).toEqual([
             { codex: { phase: "final_answer" } },
         ]);
@@ -152,6 +169,14 @@ function thoughtTexts(updates: UpdateSessionEvent[] | null): string[] {
             update.sessionUpdate === "agent_thought_chunk"
         ))
         .flatMap((update) => update.content.type === "text" ? [update.content.text] : []);
+}
+
+function thoughtMessageIds(updates: UpdateSessionEvent[] | null): Array<string | null | undefined> {
+    return (updates ?? [])
+        .filter((update): update is Extract<UpdateSessionEvent, { sessionUpdate: "agent_thought_chunk" }> => (
+            update.sessionUpdate === "agent_thought_chunk"
+        ))
+        .map((update) => update.messageId);
 }
 
 function agentMessageMetas(updates: UpdateSessionEvent[] | null): unknown[] {

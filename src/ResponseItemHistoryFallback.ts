@@ -6,7 +6,7 @@ import { stripShellPrefix } from "./CommandUtils";
 import type { CommandAction, Thread, ThreadItem } from "./app-server/v2";
 import { createCommandActionEvent } from "./CodexToolCallMapper";
 import { createTerminalOutputMeta, type TerminalOutputMode } from "./TerminalOutputMode";
-import { createAgentMessageChunk, createCodexMessagePhaseMeta } from "./ContentChunks";
+import { createCodexAgentChunk } from "./ContentChunks";
 
 type JsonRecord = Record<string, unknown>;
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
@@ -236,8 +236,10 @@ function createMessageUpdates(item: JsonRecord): UpdateSessionEvent[] {
     }
 
     const phase = stringValue(item["phase"]);
+    const turnId = stringValue(asRecord(item["internal_chat_message_metadata_passthrough"])?.["turn_id"]) ?? undefined;
+    const itemId = stringValue(item["id"]) ?? undefined;
     return contentBlocksFromResponseContent(item["content"]).map((content) => (
-        createAgentMessageChunk(content, undefined, createCodexMessagePhaseMeta(phase))
+        createCodexAgentChunk({content, phase, turnId, itemId})
     ));
 }
 

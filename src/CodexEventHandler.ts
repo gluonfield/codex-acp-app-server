@@ -252,6 +252,7 @@ export class CodexEventHandler {
         return createCodexAgentChunk({
             content: {type: "text", text: event.delta},
             phase,
+            boundary: "continuation",
             turnId: event.turnId,
             itemId: event.itemId,
         });
@@ -345,7 +346,15 @@ export class CodexEventHandler {
                 return createCollabAgentToolCallUpdate(event.item);
             case "agentMessage":
                 this.rememberAgentMessagePhase(event.item);
-                return null;
+                return event.item.phase === "commentary"
+                    ? createCodexAgentChunk({
+                        content: {type: "text", text: ""},
+                        phase: event.item.phase,
+                        boundary: "item",
+                        turnId: event.turnId,
+                        itemId: event.item.id,
+                    })
+                    : null;
             case "contextCompaction":
                 return createContextCompactionStartUpdate(event.item);
             case "subAgentActivity":

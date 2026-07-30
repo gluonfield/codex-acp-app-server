@@ -84,7 +84,7 @@ describe("ResponseItemHistoryFallback", () => {
         ]), "terminal_output");
 
         expect(thoughtTexts(updates)).toEqual([
-            "Checking the relevant event mapping.",
+            "\n\nChecking the relevant event mapping.",
         ]);
         expect(thoughtMessageIds(updates)).toEqual(["turn-1"]);
         expect(agentMessageMetas(updates)).toEqual([

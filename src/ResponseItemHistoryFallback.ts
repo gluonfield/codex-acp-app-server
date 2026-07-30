@@ -238,8 +238,14 @@ function createMessageUpdates(item: JsonRecord): UpdateSessionEvent[] {
     const phase = stringValue(item["phase"]);
     const turnId = stringValue(asRecord(item["internal_chat_message_metadata_passthrough"])?.["turn_id"]) ?? undefined;
     const itemId = stringValue(item["id"]) ?? undefined;
-    return contentBlocksFromResponseContent(item["content"]).map((content) => (
-        createCodexAgentChunk({content, phase, turnId, itemId})
+    return contentBlocksFromResponseContent(item["content"]).map((content, index) => (
+        createCodexAgentChunk({
+            content,
+            phase,
+            boundary: index === 0 ? "item" : "continuation",
+            turnId,
+            itemId,
+        })
     ));
 }
 

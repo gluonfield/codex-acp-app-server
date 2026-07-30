@@ -1444,6 +1444,7 @@ export class CodexAcpServer {
                 return [createCodexAgentChunk({
                     content: {type: "text", text: item.text},
                     phase: item.phase,
+                    boundary: "item",
                     turnId,
                     itemId: item.id,
                 })];
@@ -1954,7 +1955,6 @@ export class CodexAcpServer {
                 logger.log("Prompt handled by a command");
                 await turn.drain();
                 if (commandResult.turnCompleted?.turn.status === "interrupted") {
-                    await this.notifyConversationInterrupted(params.sessionId);
                     return this.cancelledPromptResponse(sessionState);
                 }
                 turn.throwIfFailed();
@@ -2004,7 +2004,6 @@ export class CodexAcpServer {
             await turn.drain();
 
             if (turnCompleted.turn.status === "interrupted") {
-                await this.notifyConversationInterrupted(params.sessionId);
                 return this.cancelledPromptResponse(sessionState);
             }
 
@@ -2042,16 +2041,6 @@ export class CodexAcpServer {
             usage: this.buildPromptUsage(sessionState.lastTokenUsage),
             _meta: this.buildQuotaMeta(sessionState),
         };
-    }
-
-    private async notifyConversationInterrupted(sessionId: string): Promise<void> {
-        if (this.sessionIsClosing(sessionId) || !this.sessions.has(sessionId)) {
-            return;
-        }
-        await this.connection.notify(acp.methods.client.session.update, {
-            sessionId,
-            update: createAgentTextMessageChunk("*Conversation interrupted*"),
-        });
     }
 
     private buildQuotaMeta(sessionState: SessionState): { quota: QuotaMeta } {

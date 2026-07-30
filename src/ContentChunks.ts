@@ -69,6 +69,7 @@ export function createAgentTextThoughtChunk(text: string, messageId?: string, me
 type CodexAgentChunk = {
     content: ContentBlock;
     phase: string | null | undefined;
+    boundary: "item" | "continuation";
     turnId?: string | undefined;
     itemId?: string | undefined;
 };
@@ -76,11 +77,15 @@ type CodexAgentChunk = {
 export function createCodexAgentChunk({
     content,
     phase,
+    boundary,
     turnId,
     itemId,
 }: CodexAgentChunk): UpdateSessionEvent {
     const meta = createCodexMessagePhaseMeta(phase);
+    const itemContent = boundary === "item" && phase === "commentary" && content.type === "text"
+        ? {...content, text: `\n\n${content.text}`}
+        : content;
     return phase === "commentary"
-        ? createAgentThoughtChunk(content, turnId, meta)
-        : createAgentMessageChunk(content, itemId, meta);
+        ? createAgentThoughtChunk(itemContent, turnId, meta)
+        : createAgentMessageChunk(itemContent, itemId, meta);
 }

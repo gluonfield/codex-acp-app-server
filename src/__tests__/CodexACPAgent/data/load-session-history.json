@@ -196,7 +196,7 @@
         "messageId": "turn-1",
         "content": {
           "type": "text",
-          "text": "Checking the restored session."
+          "text": "\n\nChecking the restored session."
         },
         "_meta": {
           "codex": {

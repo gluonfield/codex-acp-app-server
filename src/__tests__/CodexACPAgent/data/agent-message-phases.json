@@ -8,6 +8,43 @@
         "messageId": "turn-1",
         "content": {
           "type": "text",
+          "text": "**Inspecting event mapping**"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "turn-1",
+        "content": {
+          "type": "text",
+          "text": "\n\n"
+        },
+        "_meta": {
+          "codex": {
+            "phase": "commentary"
+          }
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "turn-1",
+        "content": {
+          "type": "text",
           "text": "Checking the relevant event mapping."
         },
         "_meta": {

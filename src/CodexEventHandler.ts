@@ -305,7 +305,6 @@ export class CodexEventHandler {
             content: {type: "text", text: event.delta},
             phase,
             boundary: "continuation",
-            turnId: event.turnId,
             itemId: event.itemId,
         });
     }
@@ -352,7 +351,7 @@ export class CodexEventHandler {
         event: ReasoningSummaryTextDeltaNotification | ReasoningTextDeltaNotification
     ): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return createAgentTextThoughtChunk(event.delta, event.turnId);
+        return createAgentTextThoughtChunk(event.delta, event.itemId);
     }
 
     private createPlanDeltaEvent(event: PlanDeltaNotification): null {
@@ -371,7 +370,7 @@ export class CodexEventHandler {
 
     private createReasoningSectionBreakEvent(event: ReasoningSummaryPartAddedNotification): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return createAgentTextThoughtChunk("\n\n", event.turnId);
+        return createAgentTextThoughtChunk("\n\n", event.itemId);
     }
 
     private async createItemEvent(event: ItemStartedNotification): Promise<UpdateSessionEvent | null> {
@@ -408,7 +407,6 @@ export class CodexEventHandler {
                         content: {type: "text", text: ""},
                         phase: event.item.phase,
                         boundary: "item",
-                        turnId: event.turnId,
                         itemId: event.item.id,
                     })
                     : null;
@@ -461,7 +459,7 @@ export class CodexEventHandler {
                 if (this.seenReasoningDeltaItemIds.delete(event.item.id)) {
                     return null;
                 }
-                return this.createCompletedReasoningEvent(event.item, event.turnId);
+                return this.createCompletedReasoningEvent(event.item);
             case "webSearch":
                 return createWebSearchCompleteUpdate(event.item);
             case "collabAgentToolCall":
@@ -499,14 +497,13 @@ export class CodexEventHandler {
 
     private createCompletedReasoningEvent(
         item: ThreadItem & { type: "reasoning" },
-        turnId: string,
     ): UpdateSessionEvent | null {
         const parts = item.summary.length > 0 ? item.summary : item.content;
         const text = parts.filter(part => part.length > 0).join("\n\n");
         if (text.length === 0) {
             return null;
         }
-        return createAgentTextThoughtChunk(text, turnId);
+        return createAgentTextThoughtChunk(text, item.id);
     }
 
     private async createCompletedPlanEvent(

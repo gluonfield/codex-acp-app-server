@@ -102,6 +102,56 @@ describe("CodexEventHandler - reasoning events", () => {
         );
     });
 
+    it("preserves thought item boundaries around tool calls", async () => {
+        const notifications: ServerNotification[] = [
+            {
+                method: "item/reasoning/summaryTextDelta",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    itemId: "reasoning-before-tool",
+                    summaryIndex: 0,
+                    delta: "Inspect the code",
+                },
+            },
+            {
+                method: "item/started",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    startedAtMs: 0,
+                    item: {
+                        type: "webSearch",
+                        id: "search-tool",
+                        query: "ACP message identity",
+                        results: null,
+                        action: {
+                            type: "search",
+                            query: "ACP message identity",
+                            queries: null,
+                        },
+                    },
+                },
+            },
+            {
+                method: "item/reasoning/summaryTextDelta",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    itemId: "reasoning-after-tool",
+                    summaryIndex: 0,
+                    delta: "Apply the result",
+                },
+            },
+        ];
+
+        await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, notifications);
+
+        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot(
+            "data/progress-item-ordering.json"
+        );
+    });
+
     it("emits all completed reasoning parts when no deltas streamed", async () => {
         const notifications: ServerNotification[] = [
             {

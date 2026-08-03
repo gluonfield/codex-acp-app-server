@@ -5,7 +5,7 @@
       "sessionId": "test-session-id",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "turn-1",
+        "messageId": "reasoning-summary",
         "content": {
           "type": "text",
           "text": "**Inspecting event mapping**"
@@ -21,7 +21,7 @@
       "sessionId": "test-session-id",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "turn-1",
+        "messageId": "commentary-message",
         "content": {
           "type": "text",
           "text": "\n\n"
@@ -42,7 +42,7 @@
       "sessionId": "test-session-id",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "turn-1",
+        "messageId": "commentary-message",
         "content": {
           "type": "text",
           "text": "Checking the relevant event mapping."

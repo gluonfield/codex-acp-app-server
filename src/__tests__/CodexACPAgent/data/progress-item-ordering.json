@@ -1,0 +1,57 @@
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "reasoning-before-tool",
+        "content": {
+          "type": "text",
+          "text": "Inspect the code"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "search-tool",
+        "kind": "search",
+        "title": "Web search: ACP message identity",
+        "status": "in_progress",
+        "rawInput": {
+          "type": "webSearch",
+          "id": "search-tool",
+          "query": "ACP message identity",
+          "action": {
+            "type": "search",
+            "query": "ACP message identity",
+            "queries": null
+          }
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "agent_thought_chunk",
+        "messageId": "reasoning-after-tool",
+        "content": {
+          "type": "text",
+          "text": "Apply the result"
+        }
+      }
+    }
+  ]
+}

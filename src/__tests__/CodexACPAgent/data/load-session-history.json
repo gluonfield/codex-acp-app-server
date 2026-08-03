@@ -193,7 +193,7 @@
       "sessionId": "session-1",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "turn-1",
+        "messageId": "item-commentary-1",
         "content": {
           "type": "text",
           "text": "\n\nChecking the restored session."
@@ -214,7 +214,7 @@
       "sessionId": "session-1",
       "update": {
         "sessionUpdate": "agent_thought_chunk",
-        "messageId": "turn-1",
+        "messageId": "item-reason-1",
         "content": {
           "type": "text",
           "text": "Thinking..."

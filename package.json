@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "1.1.9-jaz.2",
+  "version": "1.1.9-jaz.3",
   "description": "",
   "main": "dist/index.js",
   "bin": {

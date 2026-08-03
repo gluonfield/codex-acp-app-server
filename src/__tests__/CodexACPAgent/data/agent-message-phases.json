@@ -20,28 +20,7 @@
     {
       "sessionId": "test-session-id",
       "update": {
-        "sessionUpdate": "agent_thought_chunk",
-        "messageId": "commentary-message",
-        "content": {
-          "type": "text",
-          "text": "\n\n"
-        },
-        "_meta": {
-          "codex": {
-            "phase": "commentary"
-          }
-        }
-      }
-    }
-  ]
-}
-{
-  "method": "sessionUpdate",
-  "args": [
-    {
-      "sessionId": "test-session-id",
-      "update": {
-        "sessionUpdate": "agent_thought_chunk",
+        "sessionUpdate": "agent_message_chunk",
         "messageId": "commentary-message",
         "content": {
           "type": "text",

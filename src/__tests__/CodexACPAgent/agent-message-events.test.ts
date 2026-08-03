@@ -24,7 +24,7 @@ describe("CodexEventHandler - agent message events", () => {
         agentMode: AgentMode.DEFAULT_AGENT_MODE
     });
 
-    it("maps commentary to thought and final answers to messages", async () => {
+    it("keeps commentary visible while mapping reasoning to thought", async () => {
         const notifications: ServerNotification[] = [
             {
                 method: "item/reasoning/summaryTextDelta",
@@ -61,6 +61,21 @@ describe("CodexEventHandler - agent message events", () => {
                 },
             },
             {
+                method: "item/completed",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    completedAtMs: 5,
+                    item: {
+                        type: "agentMessage",
+                        id: "commentary-message",
+                        text: "Checking the relevant event mapping.",
+                        phase: "commentary",
+                        memoryCitation: null,
+                    },
+                },
+            },
+            {
                 method: "item/started",
                 params: {
                     threadId: sessionId,
@@ -82,6 +97,21 @@ describe("CodexEventHandler - agent message events", () => {
                     turnId: "turn-1",
                     itemId: "final-message",
                     delta: "Yes, here is the answer.",
+                },
+            },
+            {
+                method: "item/completed",
+                params: {
+                    threadId: sessionId,
+                    turnId: "turn-1",
+                    completedAtMs: 15,
+                    item: {
+                        type: "agentMessage",
+                        id: "final-message",
+                        text: "Yes, here is the answer.",
+                        phase: "final_answer",
+                        memoryCitation: null,
+                    },
                 },
             },
         ];

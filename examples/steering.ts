@@ -70,10 +70,12 @@ const steeringPrompt = [
 type SteeringRequest = {
     sessionId: acp.SessionId;
     prompt: acp.ContentBlock[];
+    waitForCompletion: boolean;
 };
 
 type SteeringResponse = {
     outcome: "injected" | "startedNewTurn";
+    stopReason: acp.StopReason;
 };
 
 type ThreadStatusType = "active" | "idle" | "systemError";
@@ -125,7 +127,9 @@ function createAgentEnvironment(): NodeJS.ProcessEnv {
 
 function supportsSteering(response: acp.InitializeResponse): boolean {
     const steering = response._meta?.["steering"];
-    return isRecord(steering) && steering["supported"] === true;
+    return isRecord(steering)
+        && steering["supported"] === true
+        && steering["waitForCompletion"] === true;
 }
 
 function readThreadStatus(update: acp.SessionUpdate): ThreadStatusType | undefined {
@@ -413,11 +417,14 @@ async function main(): Promise<void> {
                     const steeringResponse = await agent.request<SteeringResponse, SteeringRequest>(STEERING_METHOD, {
                         sessionId: trackedSessionId,
                         prompt: [{type: "text", text: steeringPrompt}],
+                        waitForCompletion: true,
                     });
                     if (steeringResponse.outcome !== "injected" && steeringResponse.outcome !== "startedNewTurn") {
                         throw new Error(`Unexpected steering response: ${JSON.stringify(steeringResponse)}`);
                     }
-                    writeEvent(c.magenta(c.bold(`   outcome: ${steeringResponse.outcome}`)));
+                    writeEvent(c.magenta(c.bold(
+                        `   outcome: ${steeringResponse.outcome}; stop reason: ${steeringResponse.stopReason}`,
+                    )));
                     if (steeringResponse.outcome === "injected") {
                         writeEvent(c.dim("   → injected into the running turn; the agent picks it up at its next step."));
                     } else {

@@ -32,6 +32,7 @@ const legacySetSessionModelParamsParser = z.object({
 const sessionSteerParamsParser = z.object({
     sessionId: z.string(),
     prompt: z.array(z.any()),
+    waitForCompletion: z.boolean().optional(),
 }).passthrough();
 
 const goalControlParamsParser = z.object({

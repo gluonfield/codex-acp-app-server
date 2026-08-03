@@ -123,21 +123,4 @@ describe("CodexEventHandler - agent message events", () => {
         );
     });
 
-    it("does not synthesize agent content when a turn is interrupted", async () => {
-        mockFixture.getCodexAppServerClient().turnStart = vi.fn().mockResolvedValue({
-            turn: { id: "turn-id", items: [], status: "inProgress", error: null }
-        });
-        mockFixture.getCodexAppServerClient().awaitTurnCompleted = vi.fn().mockResolvedValue({
-            threadId: sessionId,
-            turn: { id: "turn-id", items: [], status: "interrupted", error: null }
-        });
-        vi.spyOn(mockFixture.getCodexAcpAgent(), "getSessionState").mockReturnValue(sessionState);
-
-        await expect(mockFixture.getCodexAcpAgent().prompt({
-            sessionId,
-            prompt: [{ type: "text", text: "interrupt me" }],
-        })).resolves.toMatchObject({ stopReason: "cancelled" });
-
-        expect(mockFixture.getAcpConnectionEvents([])).toEqual([]);
-    });
 });

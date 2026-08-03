@@ -62,6 +62,23 @@ describe("ACP session close", () => {
         expect(() => codexAcpAgent.getSessionState(sessionId)).toThrow(`Session ${sessionId} not found`);
     });
 
+    it("returns cancellation state without synthesizing assistant content", async () => {
+        const {fixture, codexAcpAgent} = await createSession();
+        vi.spyOn(fixture.getCodexAppServerClient(), "turnStart")
+            .mockResolvedValue(createTurnStartResponse("turn-id"));
+        vi.spyOn(fixture.getCodexAppServerClient(), "awaitTurnCompleted").mockResolvedValue({
+            threadId: sessionId,
+            turn: {...createCompletedTurn("turn-id"), status: "interrupted"},
+        });
+
+        await expect(codexAcpAgent.prompt({
+            sessionId,
+            prompt: [{type: "text", text: "interrupt me"}],
+        })).resolves.toMatchObject({stopReason: "cancelled"});
+
+        expect(fixture.getAcpConnectionDump([])).not.toContain("agent_message_chunk");
+    });
+
     it("does not wait for delayed turn start before closing", async () => {
         const {fixture, codexAcpAgent} = await createSession();
         const turnStart = deferred<TurnStartResponse>();

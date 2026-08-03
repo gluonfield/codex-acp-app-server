@@ -64,6 +64,7 @@ describe('CodexACPAgent - initialize', () => {
             _meta: {
                 steering: {
                     supported: true,
+                    waitForCompletion: true,
                 },
             },
         });

@@ -3,12 +3,13 @@ import type {AcpClientConnection} from "./ACPSessionConnection";
 import {CodexAcpClient} from "./CodexAcpClient";
 import {CodexApprovalHandler} from "./CodexApprovalHandler";
 import {CodexElicitationHandler} from "./CodexElicitationHandler";
-import {CodexEventHandler} from "./CodexEventHandler";
+import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
 import type {SessionState} from "./CodexAcpServer";
 import type {TurnCompletedNotification} from "./app-server/v2";
 import {resolveFastServiceTier} from "./FastModeConfig";
 import {logger} from "./Logger";
 import {ModelId} from "./ModelId";
+import {clientSupportsPlanUpdates} from "./PlanCapabilities";
 
 export class CodexTurn {
     private constructor(
@@ -26,7 +27,11 @@ export class CodexTurn {
         run: <T>(operation: () => Promise<T>) => Promise<T>,
         signal?: AbortSignal,
     ): Promise<CodexTurn> {
-        const events = new CodexEventHandler(connection, state);
+        const events = new CodexEventHandler(
+            connection,
+            state,
+            clientSupportsPlanUpdates(clientCapabilities),
+        );
         const approvals = new CodexApprovalHandler(connection, state, signal);
         const elicitations = new CodexElicitationHandler(
             connection,
@@ -89,5 +94,17 @@ export class CodexTurn {
     throwIfFailed(): void {
         const failure = this.events.getFailure();
         if (failure) throw failure;
+    }
+
+    flushPendingPlanUpdates(): Promise<void> {
+        return this.events.flushPendingPlanUpdates();
+    }
+
+    takeCompletedPlan(): CompletedPlan | null {
+        return this.events.takeCompletedPlan();
+    }
+
+    dispose(): Promise<void> {
+        return this.events.dispose();
     }
 }

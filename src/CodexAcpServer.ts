@@ -1,6 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {RequestError, type SessionId, type SessionModeState} from "@agentclientprotocol/sdk";
-import {CodexEventHandler} from "./CodexEventHandler";
+import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
 import {CodexTurn} from "./CodexTurn";
 import {type CodexAuthRequest, getCodexAuthMethods} from "./CodexAuthMethod";
 import {CodexAcpClient} from "./CodexAcpClient";
@@ -21,7 +21,9 @@ import {AgentMode, MODE_CONFIG_ID} from "./AgentMode";
 import {
     COLLABORATION_MODE_CONFIG_ID,
     createCollaborationModeConfigOption,
+    DEFAULT_COLLABORATION_MODE,
     parseCollaborationMode,
+    PLAN_COLLABORATION_MODE,
 } from "./CollaborationModeConfig";
 import type {ModeKind} from "./app-server/ModeKind";
 import {
@@ -77,6 +79,7 @@ import {
 import packageJson from "../package.json";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
+import {clientSupportsPlanUpdates} from "./PlanCapabilities";
 import {
     createCodexMessagePhaseMeta,
     createCodexAgentChunk,
@@ -92,6 +95,9 @@ import {
 import {parseSideChatPrompt, SideChatManager} from "./SideChatManager";
 import {parsePromptCommand} from "./PromptCommand";
 import type {SessionMetadata, SessionMetadataWithThread} from "./CodexSessionMetadata";
+
+const IMPLEMENT_PLAN_OPTION_ID = "implement_plan";
+const REVISE_PLAN_OPTION_ID = "revise_plan";
 
 export interface SessionState {
     sessionId: string,
@@ -1480,7 +1486,7 @@ export class CodexAcpServer {
             case "contextCompaction":
                 return [createCompletedContextCompactionUpdate(item)];
             case "plan":
-                return [this.createPlanMessageUpdate(item)];
+                return item.text.length > 0 ? [this.createPlanHistoryUpdate(item)] : [];
         }
     }
 
@@ -1533,9 +1539,19 @@ export class CodexAcpServer {
         };
     }
 
-    private createPlanMessageUpdate(
+    private createPlanHistoryUpdate(
         item: ThreadItem & { type: "plan" }
     ): UpdateSessionEvent {
+        if (clientSupportsPlanUpdates(this.clientCapabilities)) {
+            return {
+                sessionUpdate: "plan_update",
+                plan: {
+                    type: "markdown",
+                    planId: item.id,
+                    content: item.text,
+                },
+            };
+        }
         return createAgentTextMessageChunk(
             item.text,
             item.id,
@@ -1895,9 +1911,10 @@ export class CodexAcpServer {
             return pendingTurnStart;
         };
         const disposePromptRequestCancellation = this.observePromptRequestCancellation(signal, sessionState, activePrompt);
+        let turn: CodexTurn | null = null;
 
         try {
-            const turn = await CodexTurn.prepare(
+            turn = await CodexTurn.prepare(
                 this.connection,
                 this.codexAcpClient,
                 sessionState,
@@ -1955,6 +1972,7 @@ export class CodexAcpServer {
                 logger.log("Prompt handled by a command");
                 await turn.drain();
                 if (commandResult.turnCompleted?.turn.status === "interrupted") {
+                    await this.notifyConversationInterrupted(params.sessionId);
                     return this.cancelledPromptResponse(sessionState);
                 }
                 turn.throwIfFailed();
@@ -1991,7 +2009,7 @@ export class CodexAcpServer {
                     logger.error(`Prompt for cancelled session ${params.sessionId} failed after prompt returned`, err);
                 }
             });
-            const turnCompleted = await Promise.race([
+            let turnCompleted = await Promise.race([
                 sendPromptPromise,
                 activePrompt.closeSignal,
                 this.cancelBeforeTurnStarted(activePrompt),
@@ -2004,10 +2022,79 @@ export class CodexAcpServer {
             await turn.drain();
 
             if (turnCompleted.turn.status === "interrupted") {
+                await turn.flushPendingPlanUpdates();
+                await this.notifyConversationInterrupted(params.sessionId);
                 return this.cancelledPromptResponse(sessionState);
             }
 
             turn.throwIfFailed();
+
+            await turn.flushPendingPlanUpdates();
+            const completedPlan = turn.takeCompletedPlan();
+            if (
+                completedPlan !== null
+                && sessionState.collaborationMode === PLAN_COLLABORATION_MODE
+                && !this.promptShouldStop(params.sessionId, activePrompt)
+            ) {
+                const approved = await this.requestPlanImplementationPermission(
+                    sessionState,
+                    completedPlan,
+                    activePrompt.signal,
+                );
+                if (this.promptShouldStop(params.sessionId, activePrompt)) {
+                    return this.cancelledPromptResponse(sessionState);
+                }
+                if (approved && !this.promptShouldStop(params.sessionId, activePrompt)) {
+                    await this.applyCollaborationModeChange(sessionState, DEFAULT_COLLABORATION_MODE);
+                    const session = new ACPSessionConnection(this.connection, sessionState.sessionId);
+                    await session.update({
+                        sessionUpdate: "config_option_update",
+                        configOptions: this.createSessionConfigOptions(sessionState),
+                    });
+
+                    const implementationRequest: acp.PromptRequest = {
+                        sessionId: params.sessionId,
+                        prompt: [{type: "text", text: "Implement the approved plan."}],
+                    };
+                    activePrompt.currentTurn = null;
+                    const implementationPromise = turn.send(
+                        implementationRequest,
+                        (turnId) => {
+                            const startedTurn = {threadId: params.sessionId, turnId};
+                            activePrompt.currentTurn = startedTurn;
+                            if (this.promptShouldStop(params.sessionId, activePrompt)) {
+                                this.interruptLateStartedTurn(startedTurn);
+                                return;
+                            }
+                            sessionState.currentTurnId = turnId;
+                        },
+                        () => this.promptShouldStop(params.sessionId, activePrompt),
+                    );
+                    void implementationPromise.catch((err) => {
+                        if (this.activePrompts.get(params.sessionId) !== activePrompt) {
+                            logger.error(`Implementation turn for cancelled prompt ${params.sessionId} failed after prompt returned`, err);
+                        }
+                    });
+                    turnCompleted = await Promise.race([
+                        implementationPromise,
+                        activePrompt.closeSignal,
+                        this.cancelBeforeTurnStarted(activePrompt),
+                    ]);
+
+                    if (turnCompleted === null) {
+                        return this.cancelledPromptResponse(sessionState);
+                    }
+
+                    await turn.drain();
+                    if (turnCompleted.turn.status === "interrupted") {
+                        await turn.flushPendingPlanUpdates();
+                        await this.notifyConversationInterrupted(params.sessionId);
+                        return this.cancelledPromptResponse(sessionState);
+                    }
+
+                    turn.throwIfFailed();
+                }
+            }
 
             await this.publishFallbackSessionTitle(
                 sessionState,
@@ -2024,6 +2111,7 @@ export class CodexAcpServer {
             throw err;
         } finally {
             logger.log("Prompt completed", {sessionId: params.sessionId});
+            await turn?.dispose();
             disposePromptRequestCancellation();
             sessionState.currentTurnId = null;
             const registeredPendingTurnStart = this.pendingTurnStarts.get(params.sessionId);
@@ -2035,12 +2123,81 @@ export class CodexAcpServer {
         }
     }
 
+    private async requestPlanImplementationPermission(
+        sessionState: SessionState,
+        plan: CompletedPlan,
+        cancellationSignal: AbortSignal,
+    ): Promise<boolean> {
+        const toolCallId = `plan-review:${plan.itemId}`;
+        try {
+            const response = await this.connection.request(
+                acp.methods.client.session.requestPermission,
+                {
+                    sessionId: sessionState.sessionId,
+                    toolCall: {
+                        toolCallId,
+                        title: "Implement this plan?",
+                        kind: "switch_mode",
+                        status: "pending",
+                        rawInput: {plan: plan.text},
+                    },
+                    options: [
+                        {
+                            optionId: IMPLEMENT_PLAN_OPTION_ID,
+                            name: "Yes, implement this plan",
+                            kind: "allow_once",
+                        },
+                        {
+                            optionId: REVISE_PLAN_OPTION_ID,
+                            name: "No, and tell Codex what to do differently",
+                            kind: "reject_once",
+                        },
+                    ],
+                    _meta: {
+                        codex: {
+                            kind: "plan_review",
+                            planItemId: plan.itemId,
+                        },
+                    },
+                },
+                {cancellationSignal},
+            );
+            const approved = response.outcome.outcome === "selected"
+                && response.outcome.optionId === IMPLEMENT_PLAN_OPTION_ID;
+            await this.connection.notify(acp.methods.client.session.update, {
+                sessionId: sessionState.sessionId,
+                update: {
+                    sessionUpdate: "tool_call_update",
+                    toolCallId,
+                    status: "completed",
+                    rawOutput: approved
+                        ? "User approved the plan."
+                        : "User kept the session in plan mode.",
+                },
+            });
+            return approved;
+        } catch (error) {
+            logger.error("Error requesting plan implementation permission", error);
+            return false;
+        }
+    }
+
     private cancelledPromptResponse(sessionState: SessionState): acp.PromptResponse {
         return {
             stopReason: "cancelled",
             usage: this.buildPromptUsage(sessionState.lastTokenUsage),
             _meta: this.buildQuotaMeta(sessionState),
         };
+    }
+
+    private async notifyConversationInterrupted(sessionId: string): Promise<void> {
+        if (this.sessionIsClosing(sessionId) || !this.sessions.has(sessionId)) {
+            return;
+        }
+        await this.connection.notify(acp.methods.client.session.update, {
+            sessionId,
+            update: createAgentTextMessageChunk("*Conversation interrupted*"),
+        });
     }
 
     private buildQuotaMeta(sessionState: SessionState): { quota: QuotaMeta } {

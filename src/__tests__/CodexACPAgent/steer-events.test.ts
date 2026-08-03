@@ -49,6 +49,14 @@ describe('_session/steering', () => {
         vi.clearAllMocks();
     });
 
+    it('advertises completion-aware native steering', async () => {
+        const mockFixture = createCodexMockTestFixture();
+
+        const response = await mockFixture.getCodexAcpAgent().initialize({protocolVersion: 1});
+
+        expect(response._meta?.["steering"]).toEqual({supported: true, waitForCompletion: true});
+    });
+
     it('reports injected when the input joins the active turn', async () => {
         const {mockFixture, sessionState, turnCompleted} = startActiveTurn();
         const turnSteerSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer")
@@ -80,6 +88,39 @@ describe('_session/steering', () => {
         await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
     });
 
+    it('keeps a completion-aware steer open until the injected turn finishes', async () => {
+        const {mockFixture, sessionState, turnCompleted} = startActiveTurn();
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer")
+            .mockResolvedValue({turnId: "turn-id"});
+
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "long running prompt"}],
+        });
+        await vi.waitFor(() => {
+            expect(sessionState.currentTurnId).toBe("turn-id");
+        });
+
+        const steerPromise = mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "native follow-up"}],
+            waitForCompletion: true,
+        });
+        let settled = false;
+        void steerPromise.finally(() => {
+            settled = true;
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(settled).toBe(false);
+
+        turnCompleted.resolve({
+            threadId: "session-id",
+            turn: createTurn("turn-id", "completed"),
+        });
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
+        await expect(steerPromise).resolves.toEqual({outcome: "injected", stopReason: "end_turn"});
+    });
+
     it('starts a new turn when no turn is active', async () => {
         const mockFixture = createCodexMockTestFixture();
         const sessionState = createTestSessionState();
@@ -107,6 +148,38 @@ describe('_session/steering', () => {
         await vi.waitFor(() => {
             expect(sessionState.currentTurnId).toBeNull();
         });
+    });
+
+    it('keeps a completion-aware late steer open for the turn it starts', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const sessionState = createTestSessionState();
+        vi.spyOn(mockFixture.getCodexAcpAgent(), "getSessionState").mockReturnValue(sessionState);
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "turnStart")
+            .mockResolvedValue({turn: createTurn("new-turn-id", "inProgress")});
+        const turnCompleted = deferred<TurnCompletedNotification>();
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "awaitTurnCompleted")
+            .mockReturnValue(turnCompleted.promise);
+
+        const steerPromise = mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "late native follow-up"}],
+            waitForCompletion: true,
+        });
+        await vi.waitFor(() => {
+            expect(sessionState.currentTurnId).toBe("new-turn-id");
+        });
+        let settled = false;
+        void steerPromise.finally(() => {
+            settled = true;
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(settled).toBe(false);
+
+        turnCompleted.resolve({
+            threadId: "session-id",
+            turn: createTurn("new-turn-id", "completed"),
+        });
+        await expect(steerPromise).resolves.toEqual({outcome: "startedNewTurn", stopReason: "end_turn"});
     });
 
     it('starts a new turn when Codex reports that the tracked turn is no longer active', async () => {

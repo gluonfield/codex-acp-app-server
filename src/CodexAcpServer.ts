@@ -260,6 +260,7 @@ export class CodexAcpServer {
             _meta: {
                 steering: {
                     supported: true,
+                    waitForCompletion: true,
                 },
             },
         };
@@ -280,7 +281,7 @@ export class CodexAcpServer {
             case LEGACY_SET_SESSION_MODEL_METHOD:
                 return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(methodRequest.params));
             case SESSION_STEERING_METHOD:
-                return await this.executeOrQueueSteeringRequest(this.parseSessionSteerParams(methodRequest.params));
+                return await this.steerSession(this.parseSessionSteerParams(methodRequest.params));
             case GOAL_CONTROL_METHOD: {
                 const sessionState = this.sessions.get(methodRequest.params.sessionId);
                 if (!sessionState) {
@@ -915,6 +916,19 @@ export class CodexAcpServer {
         }
     }
 
+    private async steerSession(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
+        const activePrompt = this.activePrompts.get(params.sessionId);
+        const response = await this.executeOrQueueSteeringRequest(params);
+        if (!params.waitForCompletion || response.outcome === "failed") {
+            return response;
+        }
+        if (response.stopReason) {
+            return response;
+        }
+        await activePrompt?.completion;
+        return {...response, stopReason: "end_turn"};
+    }
+
     /**
      * Returns the steering queue for a session, creating and registering it on
      * first use.
@@ -1005,15 +1019,16 @@ export class CodexAcpServer {
 
     /**
      * Starts a new turn from a steering prompt when there is no live turn to
-     * inject into, and returns as soon as that turn is running.
+     * inject into. Completion-aware clients wait for its result; existing
+     * clients return as soon as the turn is running.
      *
      * Waits for any previous prompt to drain first, then re-checks that the
      * session is not closing — the await above is a window during which a close
      * request can arrive.
      *
      * @param params The target session id and the prompt to steer with.
-     * @returns "startedNewTurn" once the turn is running; throws if the prompt
-     *     fails or is cancelled before the turn starts.
+     * @returns "startedNewTurn", with the stop reason when completion was
+     *     requested; throws if the prompt fails or is cancelled before it starts.
      */
     private async startNewTurnFromSteering(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
         // A prompt can outlive its turn (post-turn cleanup runs before it leaves
@@ -1024,6 +1039,11 @@ export class CodexAcpServer {
         await previousPrompt?.completion;
         if (this.sessionIsClosing(params.sessionId)) {
             throw RequestError.invalidRequest(`Session ${params.sessionId} is closing`);
+        }
+
+        if (params.waitForCompletion) {
+            const response = await this.prompt(params);
+            return {outcome: "startedNewTurn", stopReason: response.stopReason};
         }
 
         return await new Promise<SessionSteeringResponse>((resolve, reject) => {
@@ -1106,6 +1126,7 @@ export class CodexAcpServer {
         return {
             sessionId: sessionId,
             prompt: prompt as acp.ContentBlock[],
+            waitForCompletion: params["waitForCompletion"] === true,
         };
     }
 
@@ -1963,7 +1984,6 @@ export class CodexAcpServer {
                 logger.log("Prompt handled by a command");
                 await turn.drain();
                 if (commandResult.turnCompleted?.turn.status === "interrupted") {
-                    await this.notifyConversationInterrupted(params.sessionId);
                     return this.cancelledPromptResponse(sessionState);
                 }
                 turn.throwIfFailed();
@@ -2014,7 +2034,6 @@ export class CodexAcpServer {
 
             if (turnCompleted.turn.status === "interrupted") {
                 await turn.flushPendingPlanUpdates();
-                await this.notifyConversationInterrupted(params.sessionId);
                 return this.cancelledPromptResponse(sessionState);
             }
 
@@ -2079,7 +2098,6 @@ export class CodexAcpServer {
                     await turn.drain();
                     if (turnCompleted.turn.status === "interrupted") {
                         await turn.flushPendingPlanUpdates();
-                        await this.notifyConversationInterrupted(params.sessionId);
                         return this.cancelledPromptResponse(sessionState);
                     }
 
@@ -2179,16 +2197,6 @@ export class CodexAcpServer {
             usage: this.buildPromptUsage(sessionState.lastTokenUsage),
             _meta: this.buildQuotaMeta(sessionState),
         };
-    }
-
-    private async notifyConversationInterrupted(sessionId: string): Promise<void> {
-        if (this.sessionIsClosing(sessionId) || !this.sessions.has(sessionId)) {
-            return;
-        }
-        await this.connection.notify(acp.methods.client.session.update, {
-            sessionId,
-            update: createAgentTextMessageChunk("*Conversation interrupted*"),
-        });
     }
 
     private buildQuotaMeta(sessionState: SessionState): { quota: QuotaMeta } {

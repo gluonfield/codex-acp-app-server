@@ -87,10 +87,12 @@ export async function legacySetSessionModel(
 export type SessionSteerRequest = {
     sessionId: SessionId;
     prompt: ContentBlock[];
+    waitForCompletion?: boolean;
 }
 
 export type SessionSteeringResponse = {
     outcome: "injected" | "startedNewTurn" | "failed";
+    stopReason?: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
 }
 
 export type SessionSteeringExtRequest = {

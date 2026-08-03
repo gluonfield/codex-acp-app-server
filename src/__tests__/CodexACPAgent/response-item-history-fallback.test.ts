@@ -86,7 +86,7 @@ describe("ResponseItemHistoryFallback", () => {
         expect(thoughtTexts(updates)).toEqual([
             "\n\nChecking the relevant event mapping.",
         ]);
-        expect(thoughtMessageIds(updates)).toEqual(["turn-1"]);
+        expect(thoughtMessageIds(updates)).toEqual(["commentary-message"]);
         expect(agentMessageMetas(updates)).toEqual([
             { codex: { phase: "final_answer" } },
         ]);

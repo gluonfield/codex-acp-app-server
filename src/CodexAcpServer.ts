@@ -82,7 +82,6 @@ import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutp
 import {clientSupportsPlanUpdates} from "./PlanCapabilities";
 import {
     createCodexMessagePhaseMeta,
-    createCodexAgentChunk,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
     createUserMessageChunk,
@@ -1446,12 +1445,7 @@ export class CodexAcpServer {
             case "subAgentActivity":
                 return [createSubAgentActivityUpdate(item, "completed", "tool_call")];
             case "agentMessage": {
-                return [createCodexAgentChunk({
-                    content: {type: "text", text: item.text},
-                    phase: item.phase,
-                    boundary: "item",
-                    itemId: item.id,
-                })];
+                return [createAgentTextMessageChunk(item.text, item.id, createCodexMessagePhaseMeta(item.phase))];
             }
             case "reasoning":
                 return this.createReasoningUpdates(item);

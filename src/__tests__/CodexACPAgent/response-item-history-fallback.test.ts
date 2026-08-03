@@ -55,7 +55,7 @@ describe("ResponseItemHistoryFallback", () => {
         expect(thoughtTexts(updates)).toEqual(["Need to inspect the directory."]);
     });
 
-    it("restores commentary as thought and final answers as messages", () => {
+    it("restores commentary and final answers as messages", () => {
         const updates = parseResponseItemHistoryFallback(jsonl([
             {
                 type: "response_item",
@@ -83,12 +83,18 @@ describe("ResponseItemHistoryFallback", () => {
             functionCallOutput("call-missing", "Chunk ID: missing\nProcess exited with code 0\nOutput:\nREADME.md\n"),
         ]), "terminal_output");
 
-        expect(thoughtTexts(updates)).toEqual([
-            "\n\nChecking the relevant event mapping.",
-        ]);
-        expect(thoughtMessageIds(updates)).toEqual(["commentary-message"]);
-        expect(agentMessageMetas(updates)).toEqual([
-            { codex: { phase: "final_answer" } },
+        expect(thoughtTexts(updates)).toEqual([]);
+        expect(agentMessages(updates)).toEqual([
+            {
+                messageId: "commentary-message",
+                text: "Checking the relevant event mapping.",
+                meta: { codex: { phase: "commentary" } },
+            },
+            {
+                messageId: "final-message",
+                text: "Final answer text.",
+                meta: { codex: { phase: "final_answer" } },
+            },
         ]);
     });
 
@@ -171,18 +177,14 @@ function thoughtTexts(updates: UpdateSessionEvent[] | null): string[] {
         .flatMap((update) => update.content.type === "text" ? [update.content.text] : []);
 }
 
-function thoughtMessageIds(updates: UpdateSessionEvent[] | null): Array<string | null | undefined> {
-    return (updates ?? [])
-        .filter((update): update is Extract<UpdateSessionEvent, { sessionUpdate: "agent_thought_chunk" }> => (
-            update.sessionUpdate === "agent_thought_chunk"
-        ))
-        .map((update) => update.messageId);
-}
-
-function agentMessageMetas(updates: UpdateSessionEvent[] | null): unknown[] {
+function agentMessages(updates: UpdateSessionEvent[] | null): unknown[] {
     return (updates ?? [])
         .filter((update): update is Extract<UpdateSessionEvent, { sessionUpdate: "agent_message_chunk" }> => (
             update.sessionUpdate === "agent_message_chunk"
         ))
-        .map((update) => update._meta);
+        .flatMap((update) => update.content.type === "text" ? [{
+            messageId: update.messageId,
+            text: update.content.text,
+            meta: update._meta,
+        }] : []);
 }

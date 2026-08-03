@@ -6,7 +6,11 @@ import { stripShellPrefix } from "./CommandUtils";
 import type { CommandAction, Thread, ThreadItem } from "./app-server/v2";
 import { createCommandActionEvent } from "./CodexToolCallMapper";
 import { createTerminalOutputMeta, type TerminalOutputMode } from "./TerminalOutputMode";
-import { createAgentTextThoughtChunk, createCodexAgentChunk } from "./ContentChunks";
+import {
+    createAgentMessageChunk,
+    createAgentTextThoughtChunk,
+    createCodexMessagePhaseMeta,
+} from "./ContentChunks";
 
 type JsonRecord = Record<string, unknown>;
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
@@ -237,13 +241,8 @@ function createMessageUpdates(item: JsonRecord): UpdateSessionEvent[] {
 
     const phase = stringValue(item["phase"]);
     const itemId = stringValue(item["id"]) ?? undefined;
-    return contentBlocksFromResponseContent(item["content"]).map((content, index) => (
-        createCodexAgentChunk({
-            content,
-            phase,
-            boundary: index === 0 ? "item" : "continuation",
-            itemId,
-        })
+    return contentBlocksFromResponseContent(item["content"]).map((content) => (
+        createAgentMessageChunk(content, itemId, createCodexMessagePhaseMeta(phase))
     ));
 }
 

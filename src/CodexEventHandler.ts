@@ -61,7 +61,6 @@ import { stripShellPrefix } from "./CommandUtils";
 import {createTerminalOutputMeta, type TerminalOutputMode} from "./TerminalOutputMode";
 import {
     createCodexMessagePhaseMeta,
-    createCodexAgentChunk,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
 } from "./ContentChunks";
@@ -301,12 +300,7 @@ export class CodexEventHandler {
 
     private async createTextEvent(event: AgentMessageDeltaNotification): Promise<UpdateSessionEvent> {
         const phase = this.agentMessagePhases.get(event.itemId) ?? null;
-        return createCodexAgentChunk({
-            content: {type: "text", text: event.delta},
-            phase,
-            boundary: "continuation",
-            itemId: event.itemId,
-        });
+        return createAgentTextMessageChunk(event.delta, event.itemId, createCodexMessagePhaseMeta(phase));
     }
 
     private async createConfigWarningEvent(event: ConfigWarningNotification): Promise<UpdateSessionEvent> {
@@ -402,14 +396,7 @@ export class CodexEventHandler {
                 return createCollabAgentToolCallUpdate(event.item);
             case "agentMessage":
                 this.rememberAgentMessagePhase(event.item);
-                return event.item.phase === "commentary"
-                    ? createCodexAgentChunk({
-                        content: {type: "text", text: ""},
-                        phase: event.item.phase,
-                        boundary: "item",
-                        itemId: event.item.id,
-                    })
-                    : null;
+                return null;
             case "contextCompaction":
                 return createContextCompactionStartUpdate(event.item);
             case "subAgentActivity":

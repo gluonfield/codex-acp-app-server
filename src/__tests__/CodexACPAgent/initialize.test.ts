@@ -66,6 +66,17 @@ describe('CodexACPAgent - initialize', () => {
                     supported: true,
                     waitForCompletion: true,
                 },
+                goal: {
+                    version: 1,
+                    controlMethod: "_session/goal",
+                    actions: ["set", "pause", "resume", "clear"],
+                },
+                jetbrains: {
+                    air: {
+                        version: 1,
+                        capabilities: ["sessionFailure", "agentFileChangeReport"],
+                    },
+                },
             },
         });
     });
@@ -104,8 +115,18 @@ describe('CodexACPAgent - initialize', () => {
         ]));
     });
 
+    it('should advertise ChatGPT device code auth only when the client supports URL elicitation', () => {
+        const withUrlElicitation = getCodexAuthMethods({elicitation: {url: {}}})
+            .map((method) => method.id);
+        expect(withUrlElicitation).toContain("chat-gpt-device-code");
+
+        const withoutUrlElicitation = getCodexAuthMethods({elicitation: {form: {}}})
+            .map((method) => method.id);
+        expect(withoutUrlElicitation).not.toContain("chat-gpt-device-code");
+    });
+
     it('should not advertise ChatGPT auth when browser auth is disabled', () => {
-        const methodIds = getCodexAuthMethods({NO_BROWSER: "1"} as NodeJS.ProcessEnv)
+        const methodIds = getCodexAuthMethods(null, {NO_BROWSER: "1"} as NodeJS.ProcessEnv)
             .map((method) => method.id);
 
         expect(methodIds).not.toContain("chat-gpt");

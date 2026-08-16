@@ -1,4 +1,9 @@
-import {CODEX_API_KEY_ENV_VAR, isCodexAuthRequest, OPENAI_API_KEY_ENV_VAR} from "./CodexAuthMethod";
+import {
+    type ApiKeyAuthRequest,
+    CODEX_API_KEY_ENV_VAR,
+    isCodexAuthRequest,
+    OPENAI_API_KEY_ENV_VAR,
+} from "./CodexAuthMethod";
 import type {EmbeddedResourceResource} from "@agentclientprotocol/sdk";
 import * as acp from "@agentclientprotocol/sdk";
 import {type McpServer, RequestError} from "@agentclientprotocol/sdk";
@@ -13,9 +18,9 @@ import type {Disposable} from "vscode-jsonrpc";
 import type {
     ClientInfo,
     ReasoningEffort,
-    ServiceTier,
     ServerNotification
 } from "./app-server";
+import type {ServiceTier} from "./app-server/ServiceTier";
 import type {JsonValue} from "./app-server/serde_json/JsonValue";
 import {ModelId} from "./ModelId";
 import {AgentMode} from "./AgentMode";
@@ -50,6 +55,24 @@ import {
 } from "./JazModelMetadata";
 import type {JsonObject} from "./JsonObject";
 import type {SessionMetadata, SessionMetadataWithThread} from "./CodexSessionMetadata";
+import {arePathBasenamesEqual, arePathsEqual, isAbsolutePathLike} from "./PathUtils";
+import {
+    AGENT_FILE_CHANGE_REPORT_DEVELOPER_INSTRUCTIONS,
+    AGENT_FILE_CHANGE_REPORT_OUTPUT_SCHEMA,
+    AGENT_FILE_CHANGE_REPORT_TIMEOUT_MS,
+    type AgentFileChangeReport,
+    AgentFileChangeReportError,
+    type AgentFileChangeWorkspace,
+    createAgentFileChangeReportPrompt,
+    createReportedAgentFileChangeReport,
+    createUnavailableAgentFileChangeReport,
+} from "./AgentFileChangeReport";
+export type CreateUrlElicitationRequest = Extract<acp.CreateElicitationRequest, {mode: "url"}>;
+export type UrlElicitationRequest = Omit<CreateUrlElicitationRequest, "mode" | "requestId">;
+
+export interface UrlElicitationRequester {
+    elicitUrl(request: UrlElicitationRequest): Promise<acp.CreateElicitationResponse>;
+}
 
 /**
  * API for accessing the Codex App Server using ACP requests.
@@ -104,7 +127,10 @@ export class CodexAcpClient {
         return this.configPath;
     }
 
-    async authenticate(authRequest: acp.AuthenticateRequest): Promise<Boolean> {
+    async authenticate(
+        authRequest: acp.AuthenticateRequest,
+        urlElicitationRequester?: UrlElicitationRequester,
+    ): Promise<Boolean> {
         if (!isCodexAuthRequest(authRequest)) {
             throw RequestError.invalidRequest();
         }
@@ -115,32 +141,62 @@ export class CodexAcpClient {
             );
         }
         switch (authRequest.methodId) {
-            case "api-key": {
-                const apiKey = authRequest._meta?.["api-key"]?.apiKey ?? this.readApiKeyFromEnv();
-                return await this.authenticateWithApiKey(apiKey);
-            }
-            case "chat-gpt": {
-                const accountResponse = await this.codexClient.accountRead({refreshToken: true});
-                if (accountResponse.account?.type === "chatgpt") {
-                    return true;
-                }
-                const loginCompletedPromise = this.awaitNextLoginCompleted();
-                const loginResponse = await this.codexClient.accountLogin({type: "chatgpt"});
-                if (loginResponse.type == "chatgpt") {
-                    await open(loginResponse.authUrl);
-                }
-                const result = await loginCompletedPromise;
-                return result.success;
-            }
+            case "api-key":
+                return await this.authenticateWithApiKey(authRequest);
+            case "chat-gpt":
+                return await this.authenticateWithChatGpt();
+            case "chat-gpt-device-code":
+                return await this.authenticateWithChatGptDeviceCode(urlElicitationRequester);
         }
     }
 
-    private async authenticateWithApiKey(apiKey: string): Promise<Boolean> {
+    private async authenticateWithApiKey(authRequest: ApiKeyAuthRequest): Promise<Boolean> {
+        const apiKey = authRequest._meta?.["api-key"]?.apiKey ?? this.readApiKeyFromEnv();
         const loginCompletedPromise = this.awaitNextLoginCompleted();
         await this.codexClient.accountLogin({
             type: "apiKey",
             apiKey,
         });
+        const result = await loginCompletedPromise;
+        return result.success;
+    }
+
+    private async authenticateWithChatGpt(): Promise<Boolean> {
+        const accountResponse = await this.codexClient.accountRead({refreshToken: true});
+        if (accountResponse.account?.type === "chatgpt") {
+            return true;
+        }
+        const loginCompletedPromise = this.awaitNextLoginCompleted();
+        const loginResponse = await this.codexClient.accountLogin({type: "chatgpt"});
+        if (loginResponse.type == "chatgpt") {
+            await open(loginResponse.authUrl);
+        }
+        const result = await loginCompletedPromise;
+        return result.success;
+    }
+
+    private async authenticateWithChatGptDeviceCode(urlElicitationRequester?: UrlElicitationRequester): Promise<Boolean> {
+        const accountResponse = await this.codexClient.accountRead({refreshToken: true});
+        if (accountResponse.account?.type === "chatgpt") {
+            return true;
+        }
+        if (!urlElicitationRequester) {
+            throw RequestError.invalidRequest(undefined, "Device code authentication requires URL elicitation support");
+        }
+        const loginCompletedPromise = this.awaitNextLoginCompleted();
+        const loginResponse = await this.codexClient.accountLogin({type: "chatgptDeviceCode"});
+        if (loginResponse.type !== "chatgptDeviceCode") {
+            return false;
+        }
+        const elicitationResponse = await urlElicitationRequester.elicitUrl({
+            url: loginResponse.verificationUrl,
+            message: `Sign in to ChatGPT and enter this code: ${loginResponse.userCode}`,
+            elicitationId: loginResponse.loginId,
+        });
+        if (!acp.CreateElicitationResponse.isAccept(elicitationResponse)) {
+            await this.codexClient.accountLoginCancel({loginId: loginResponse.loginId});
+            return false;
+        }
         const result = await loginCompletedPromise;
         return result.success;
     }
@@ -397,12 +453,17 @@ export class CodexAcpClient {
         sessionId: string,
         objective: string,
         onTurnStarted?: (turnId: string) => void,
+        onGoalSet?: (goal: ThreadGoal) => void,
     ): Promise<TurnCompletedNotification | null> {
-        return await this.codexClient.runGoalSet({
+        const params = {
             threadId: sessionId,
             objective,
             status: "active",
-        }, onTurnStarted);
+        } as const;
+        if (onGoalSet === undefined) {
+            return await this.codexClient.runGoalSet(params, onTurnStarted);
+        }
+        return await this.codexClient.runGoalSet(params, onTurnStarted, undefined, onGoalSet);
     }
 
     async setGoalStatus(sessionId: string, status: ThreadGoalStatus): Promise<ThreadGoal> {
@@ -422,11 +483,16 @@ export class CodexAcpClient {
     async resumeGoal(
         sessionId: string,
         onTurnStarted?: (turnId: string) => void,
+        onGoalSet?: (goal: ThreadGoal) => void,
     ): Promise<TurnCompletedNotification | null> {
-        return await this.codexClient.runGoalSet({
+        const params = {
             threadId: sessionId,
             status: "active",
-        }, onTurnStarted);
+        } as const;
+        if (onGoalSet === undefined) {
+            return await this.codexClient.runGoalSet(params, onTurnStarted);
+        }
+        return await this.codexClient.runGoalSet(params, onTurnStarted, undefined, onGoalSet);
     }
 
     async clearGoal(sessionId: string): Promise<void> {
@@ -678,6 +744,131 @@ export class CodexAcpClient {
         }, onTurnStarted);
     }
 
+    async runAgentFileChangeReport(params: {
+        sessionId: string;
+        turnId: string;
+        requestId: string;
+        workspace: AgentFileChangeWorkspace;
+        signal?: AbortSignal;
+    }): Promise<AgentFileChangeReport> {
+        if (params.signal?.aborted) {
+            return createUnavailableAgentFileChangeReport(params.requestId, "cancelled");
+        }
+
+        const budget = new AgentFileChangeReportBudget(params.signal);
+        let forkThreadId: string | null = null;
+        let auditTurnId: string | null = null;
+        let auditTurnCompleted = false;
+        let lateStopReason: "cancelled" | "timeout" | null = null;
+        try {
+            const forkPromise = this.codexClient.threadFork({
+                threadId: params.sessionId,
+                lastTurnId: params.turnId,
+                cwd: params.workspace.cwd,
+                approvalPolicy: "never",
+                sandbox: "read-only",
+                developerInstructions: AGENT_FILE_CHANGE_REPORT_DEVELOPER_INSTRUCTIONS,
+                ephemeral: true,
+            });
+            void forkPromise.then(fork => {
+                if (lateStopReason !== null && forkThreadId === null) {
+                    void this.unsubscribeAgentFileChangeReportThread(fork.thread.id, budget);
+                }
+            }, () => {});
+            const fork = await budget.wait(forkPromise);
+            forkThreadId = fork.thread.id;
+
+            const turnPromise = this.codexClient.runTurn({
+                threadId: forkThreadId,
+                input: [{
+                    type: "text",
+                    text: createAgentFileChangeReportPrompt(params.workspace),
+                    text_elements: [],
+                }],
+                cwd: params.workspace.cwd,
+                approvalPolicy: "never",
+                sandboxPolicy: {type: "readOnly", networkAccess: false},
+                summary: "none",
+                outputSchema: AGENT_FILE_CHANGE_REPORT_OUTPUT_SCHEMA,
+            }, (turnId) => {
+                auditTurnId = turnId;
+                if (lateStopReason !== null && forkThreadId !== null) {
+                    void this.interruptAgentFileChangeReport(forkThreadId, turnId, lateStopReason, budget);
+                }
+            });
+            const outcome = await budget.wait(turnPromise);
+            auditTurnCompleted = true;
+            const thread = await budget.wait(this.codexClient.threadRead({
+                threadId: forkThreadId,
+                includeTurns: true,
+            }));
+            const completedTurn = thread.thread.turns.find(
+                turn => turn.id === outcome.turn.id,
+            );
+            if (completedTurn === undefined) {
+                throw new AgentFileChangeReportError(
+                    "notReported",
+                    "The completed audit turn was not present in thread history",
+                );
+            }
+            return createReportedAgentFileChangeReport(
+                params.requestId,
+                completedTurn,
+                params.workspace,
+            );
+        } catch (error) {
+            if (error instanceof AgentFileChangeReportBudgetError) {
+                lateStopReason = error.reason;
+                if (!auditTurnCompleted && forkThreadId !== null && auditTurnId !== null) {
+                    await this.interruptAgentFileChangeReport(
+                        forkThreadId,
+                        auditTurnId,
+                        error.reason,
+                        budget,
+                    );
+                }
+                return createUnavailableAgentFileChangeReport(params.requestId, error.reason);
+            }
+            if (error instanceof AgentFileChangeReportError) {
+                logger.log("Agent file-change report unavailable", {reason: error.reason});
+                return createUnavailableAgentFileChangeReport(params.requestId, error.reason);
+            }
+            logger.error("Agent file-change report failed", error);
+            return createUnavailableAgentFileChangeReport(params.requestId, "providerError");
+        } finally {
+            if (forkThreadId !== null) {
+                await this.unsubscribeAgentFileChangeReportThread(forkThreadId, budget);
+            }
+        }
+    }
+
+    private async interruptAgentFileChangeReport(
+        threadId: string,
+        turnId: string,
+        reason: "cancelled" | "timeout",
+        budget: AgentFileChangeReportBudget,
+    ): Promise<void> {
+        this.codexClient.markTurnStale(threadId, turnId);
+        try {
+            await budget.wait(this.codexClient.turnInterrupt({threadId, turnId}));
+        } catch (error) {
+            logger.error(`Failed to interrupt ${reason} agent file-change report`, error);
+        } finally {
+            this.codexClient.resolveTurnInterrupted(threadId, turnId);
+        }
+    }
+
+    private async unsubscribeAgentFileChangeReportThread(
+        threadId: string,
+        budget: AgentFileChangeReportBudget,
+    ): Promise<void> {
+        try {
+            await budget.wait(this.codexClient.threadUnsubscribe({threadId}));
+        } catch (error) {
+            logger.error("Failed to unsubscribe the agent file-change report thread", error);
+        }
+    }
+
     async setCollaborationMode(sessionId: string, mode: ModeKind, currentModelId: string): Promise<void> {
         await this.codexClient.threadSettingsUpdate({
             threadId: sessionId,
@@ -759,11 +950,10 @@ export class CodexAcpClient {
         const requestedCwd = request.cwd?.trim() ?? null;
         const filterByCwd = (thread: Thread): boolean => {
             if (!requestedCwd) return true;
-            if (path.isAbsolute(requestedCwd)) {
-                return thread.cwd === requestedCwd;
+            if (isAbsolutePathLike(requestedCwd)) {
+                return arePathsEqual(thread.cwd, requestedCwd);
             }
-            const requestedBase = path.basename(requestedCwd);
-            return path.basename(thread.cwd) === requestedBase;
+            return arePathBasenamesEqual(thread.cwd, requestedCwd);
         };
 
         const preferredProvider = this.getModelProvider();
@@ -786,7 +976,7 @@ export class CodexAcpClient {
             const filtered = listResponse.data
                 .filter(filterByCwd)
                 .map(mapThreadToSession);
-            if (filtered.length > 0 || path.isAbsolute(requestedCwd)) {
+            if (filtered.length > 0 || isAbsolutePathLike(requestedCwd)) {
                 sessions = filtered;
             } else {
                 logger.log("Ignoring non-absolute cwd filter for session/list", {cwd: requestedCwd});
@@ -828,6 +1018,62 @@ export class CodexAcpClient {
         return models;
     }
 
+}
+
+class AgentFileChangeReportBudgetError extends Error {
+    constructor(readonly reason: "cancelled" | "timeout") {
+        super(`Agent file-change report ${reason}`);
+        this.name = "AgentFileChangeReportBudgetError";
+    }
+}
+
+/** One wall-clock budget shared by fork, turn, read, interruption, and cleanup. */
+class AgentFileChangeReportBudget {
+    private readonly deadline = Date.now() + AGENT_FILE_CHANGE_REPORT_TIMEOUT_MS;
+
+    constructor(private readonly signal?: AbortSignal) {}
+
+    async wait<T>(operation: Promise<T>): Promise<T> {
+        // A stage can outlive the race at the transport layer. Attach a handler
+        // before the immediate budget checks so a late rejection is never
+        // unhandled even when no time remains to await it.
+        void operation.catch(() => {});
+        const immediateReason = this.stopReason();
+        if (immediateReason !== null) {
+            throw new AgentFileChangeReportBudgetError(immediateReason);
+        }
+
+        return await new Promise<T>((resolve, reject) => {
+            let settled = false;
+            const finish = (action: () => void): void => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
+                this.signal?.removeEventListener("abort", onAbort);
+                action();
+            };
+            const onAbort = (): void => finish(() => reject(new AgentFileChangeReportBudgetError("cancelled")));
+            const timeout = setTimeout(
+                () => finish(() => reject(new AgentFileChangeReportBudgetError("timeout"))),
+                Math.max(1, this.deadline - Date.now()),
+            );
+            timeout.unref();
+            this.signal?.addEventListener("abort", onAbort, {once: true});
+            if (this.signal?.aborted) {
+                onAbort();
+            }
+            void operation.then(
+                value => finish(() => resolve(value)),
+                error => finish(() => reject(error)),
+            );
+        });
+    }
+
+    private stopReason(): "cancelled" | "timeout" | null {
+        if (this.signal?.aborted) return "cancelled";
+        if (Date.now() >= this.deadline) return "timeout";
+        return null;
+    }
 }
 
 function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {

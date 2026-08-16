@@ -98,6 +98,7 @@ export function modelFromJazMetadata(metadata: ExactJazModelMetadata): Model {
         upgrade: null,
         upgradeInfo: null,
         availabilityNux: null,
+        modelSpecialty: null,
         displayName: metadata.displayName ?? metadata.id,
         description: metadata.description ?? "",
         hidden: false,

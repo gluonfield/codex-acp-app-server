@@ -1,20 +1,15 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {RequestError, type SessionId, type SessionModeState} from "@agentclientprotocol/sdk";
 import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
-import {CodexTurn} from "./CodexTurn";
+import {CodexApprovalHandler} from "./CodexApprovalHandler";
+import {CodexElicitationHandler} from "./CodexElicitationHandler";
 import {type CodexAuthRequest, getCodexAuthMethods} from "./CodexAuthMethod";
-import {CodexAcpClient} from "./CodexAcpClient";
+import {clientSupportsUrlElicitation} from "./ElicitationCapabilities";
+import {CodexAcpClient, type UrlElicitationRequester} from "./CodexAcpClient";
 import type {McpStartupResult} from "./CodexAppServerClient";
-import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
+import {type AcpClientConnection, ACPSessionConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
 import type {InputModality, ReasoningEffort} from "./app-server";
-import type {
-    Account,
-    Model,
-    ReasoningEffortOption,
-    Thread,
-    ThreadItem,
-    UserInput
-} from "./app-server/v2";
+import type {Account, Model, ReasoningEffortOption, Thread, ThreadGoal, ThreadItem, UserInput} from "./app-server/v2";
 import type {RateLimitsMap} from "./RateLimitsMap";
 import {ModelId} from "./ModelId";
 import {AgentMode, MODE_CONFIG_ID} from "./AgentMode";
@@ -35,31 +30,34 @@ import {
 } from "./ModelConfigOption";
 import type {TokenCount} from "./TokenCount";
 import {toPromptUsage} from "./TokenCount";
-import {CodexCommands} from "./CodexCommands";
+import {CodexCommands, GOAL_CONTINUATION_PROMPT} from "./CodexCommands";
 import {SteeringQueue} from "./SteeringQueue";
 import type {QuotaMeta} from "./QuotaMeta";
 import {logger} from "./Logger";
 import {sanitizeMcpServerName} from "./McpServerName";
 import {createResponseItemHistoryFallbackUpdates} from "./ResponseItemHistoryFallback";
 import {
+    GOAL_CONTROL_ACTIONS,
+    GOAL_CONTROL_METHOD,
+    GOAL_EXTENSION_VERSION,
+    isExtMethodRequest,
+    LEGACY_GOAL_CONTROL_METHOD,
+    LEGACY_SET_SESSION_MODEL_METHOD,
     type LegacyLoadSessionResponse,
     type LegacyNewSessionResponse,
     type LegacyResumeSessionResponse,
     type LegacySessionModelState,
     type LegacySetSessionModelRequest,
     type LegacySetSessionModelResponse,
-    type SessionSteerRequest,
-    type SessionSteeringResponse,
-    GOAL_CONTROL_METHOD,
-    isExtMethodRequest,
-    LEGACY_SET_SESSION_MODEL_METHOD,
     SESSION_STEERING_METHOD,
+    type SessionSteeringResponse,
+    type SessionSteerRequest,
 } from "./AcpExtensions";
 import {
     createCollabAgentToolCallUpdate,
-    createCompletedContextCompactionUpdate,
     createCommandExecutionCompleteUpdate,
     createCommandExecutionUpdate,
+    createCompletedContextCompactionUpdate,
     createDynamicToolCallUpdate,
     createFileChangeUpdate,
     createImageGenerationUpdate,
@@ -75,17 +73,19 @@ import {
     FAST_MODE_OFF,
     FAST_MODE_ON,
     modelSupportsFast,
+    resolveFastServiceTier,
 } from "./FastModeConfig";
 import packageJson from "../package.json";
 import {isJetBrains2026_1Client} from "./JBUtils";
 import {resolveTerminalOutputMode, type TerminalOutputMode} from "./TerminalOutputMode";
 import {clientSupportsPlanUpdates} from "./PlanCapabilities";
 import {
-    createCodexMessagePhaseMeta,
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
+    createCodexMessagePhaseMeta,
     createUserMessageChunk,
 } from "./ContentChunks";
+import {randomUUID} from "node:crypto";
 import {
     sameThreadGoalSnapshot,
     type ThreadGoalSnapshot,
@@ -94,6 +94,22 @@ import {
 import {parseSideChatPrompt, SideChatManager} from "./SideChatManager";
 import {parsePromptCommand} from "./PromptCommand";
 import type {SessionMetadata, SessionMetadataWithThread} from "./CodexSessionMetadata";
+import {
+    AIR_AGENT_FILE_CHANGE_REPORT_KEY,
+    AIR_EXTENSION_CAPABILITIES_KEY,
+    AIR_EXTENSION_VERSION,
+    AIR_EXTENSION_VERSION_KEY,
+    AIR_META_KEY,
+    AIR_SESSION_FAILURE_KEY,
+    JETBRAINS_META_KEY,
+} from "./AirExtension";
+import {
+    type AgentFileChangeReport,
+    type AgentFileChangeReportRequest,
+    type AgentFileChangeReportUnavailableReason,
+    createUnavailableAgentFileChangeReport,
+    parseAgentFileChangeReportRequest,
+} from "./AgentFileChangeReport";
 
 const IMPLEMENT_PLAN_OPTION_ID = "implement_plan";
 const REVISE_PLAN_OPTION_ID = "revise_plan";
@@ -125,6 +141,53 @@ export interface SessionState {
     goalRevision: number;
     sessionTitle: string | null;
     sessionTitleSource: "unset" | "fallback" | "explicit" | "unknown";
+    sessionFailure?: SessionFailure;
+}
+
+export type SessionFailureCategory =
+    | "connection" | "access" | "limit" | "request" | "service" | "unknown";
+
+export type SessionFailureAction = "retry" | "login" | "new_session";
+
+/**
+ * How loudly the client should render the record. Absent on the wire means `error`, so an AIR build
+ * that predates warning support keeps treating every record it receives as a failure.
+ */
+export type SessionFailureSeverity = "error" | "warning";
+
+export interface SessionFailure {
+    id: string;
+    revision: number;
+    category: SessionFailureCategory;
+    severity: SessionFailureSeverity;
+    title: string;
+    details?: string;
+    actions: SessionFailureAction[];
+}
+
+const CODEX_PROCESS_EXITED_ERROR_CODE = 1001;
+
+function clientSupportsAirCapability(
+    capabilities: acp.ClientCapabilities | null,
+    capability: string,
+): boolean {
+    const jetbrains = capabilities?._meta?.[JETBRAINS_META_KEY] as Record<string, unknown> | undefined;
+    const air = jetbrains?.[AIR_META_KEY] as Record<string, unknown> | undefined;
+    const version = air?.[AIR_EXTENSION_VERSION_KEY];
+    const supported = air?.[AIR_EXTENSION_CAPABILITIES_KEY];
+    return typeof version === "number"
+        && Number.isInteger(version)
+        && version >= AIR_EXTENSION_VERSION
+        && Array.isArray(supported)
+        && supported.includes(capability);
+}
+
+function clientSupportsTypedSessionFailures(capabilities: acp.ClientCapabilities | null): boolean {
+    return clientSupportsAirCapability(capabilities, AIR_SESSION_FAILURE_KEY);
+}
+
+function clientSupportsAgentFileChangeReports(capabilities: acp.ClientCapabilities | null): boolean {
+    return clientSupportsAirCapability(capabilities, AIR_AGENT_FILE_CHANGE_REPORT_KEY);
 }
 
 interface ActiveAuthState {
@@ -165,6 +228,7 @@ export class CodexAcpServer {
     private readonly defaultAuthRequest: CodexAuthRequest | null;
     private readonly getExitCode: () => number | null;
     private readonly getRecentStderr: () => string;
+    private readonly sessionFailureEpoch: string;
     private readonly availableCommands: CodexCommands;
     private readonly sideChats: SideChatManager;
     private clientInfo: acp.Implementation | null;
@@ -180,6 +244,7 @@ export class CodexAcpServer {
     private readonly closingSessions: Map<string, number>;
     private readonly sessionGenerations: Map<string, number>;
     private readonly sessionOpenGenerations: Map<string, number>;
+    private readonly goalControlGenerations: Map<string, number>;
 
     constructor(
         connection: AcpClientConnection,
@@ -196,11 +261,13 @@ export class CodexAcpServer {
         this.closingSessions = new Map();
         this.sessionGenerations = new Map();
         this.sessionOpenGenerations = new Map();
+        this.goalControlGenerations = new Map();
         this.connection = connection;
         this.codexAcpClient = codexAcpClient;
         this.defaultAuthRequest = defaultAuthRequest ?? null;
         this.getExitCode = getExitCode ?? (() => null);
         this.getRecentStderr = getRecentStderr ?? (() => "");
+        this.sessionFailureEpoch = randomUUID();
         this.clientInfo = null;
         this.clientCapabilities = null;
         this.terminalOutputMode = "terminal_output_delta";
@@ -256,11 +323,25 @@ export class CodexAcpServer {
                     sse: false
                 }
             },
-            authMethods: accountAuth ? getCodexAuthMethods() : [],
+            authMethods: accountAuth ? getCodexAuthMethods(this.clientCapabilities) : [],
             _meta: {
                 steering: {
                     supported: true,
                     waitForCompletion: true,
+                },
+                goal: {
+                    version: GOAL_EXTENSION_VERSION,
+                    controlMethod: GOAL_CONTROL_METHOD,
+                    actions: [...GOAL_CONTROL_ACTIONS],
+                },
+                [JETBRAINS_META_KEY]: {
+                    [AIR_META_KEY]: {
+                        [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
+                        [AIR_EXTENSION_CAPABILITIES_KEY]: [
+                            AIR_SESSION_FAILURE_KEY,
+                            AIR_AGENT_FILE_CHANGE_REPORT_KEY,
+                        ],
+                    },
                 },
             },
         };
@@ -282,16 +363,57 @@ export class CodexAcpServer {
                 return await this.unstable_setSessionModel(this.parseLegacySetSessionModelParams(methodRequest.params));
             case SESSION_STEERING_METHOD:
                 return await this.steerSession(this.parseSessionSteerParams(methodRequest.params));
-            case GOAL_CONTROL_METHOD: {
+            case GOAL_CONTROL_METHOD:
+            case LEGACY_GOAL_CONTROL_METHOD: {
                 const sessionState = this.sessions.get(methodRequest.params.sessionId);
                 if (!sessionState) {
                     throw RequestError.invalidParams(undefined, `Unknown session: ${methodRequest.params.sessionId}`);
                 }
                 const sessionGeneration = this.getSessionGeneration(sessionState.sessionId);
-                if (methodRequest.params.action === "pause") {
+                const goalControlGeneration = this.bumpGoalControlGeneration(sessionState.sessionId);
+                if (methodRequest.params.action === "set") {
+                    const objective = methodRequest.params.objective;
+                    let updatedGoal: ThreadGoal | null = null;
+                    const turnCompleted = await this.runWithProcessCheck(() => this.codexAcpClient.setGoal(
+                        sessionState.sessionId,
+                        objective,
+                        undefined,
+                        (goal) => {
+                            updatedGoal = goal;
+                        },
+                    ));
+                    if (turnCompleted === null && updatedGoal !== null) {
+                        await this.startGoalContinuationIfCurrent(
+                            sessionState,
+                            sessionGeneration,
+                            goalControlGeneration,
+                            updatedGoal,
+                        );
+                    }
+                } else if (methodRequest.params.action === "pause") {
                     const goal = await this.runWithProcessCheck(() => this.codexAcpClient.setGoalStatus(sessionState.sessionId, "paused"));
                     if (this.goalPublishIsCurrent(sessionState, sessionGeneration)) {
                         await this.publishGoalSnapshot(sessionState, toThreadGoalSnapshot(goal), false);
+                    }
+                } else if (methodRequest.params.action === "resume") {
+                    let updatedGoal: ThreadGoal | null = null;
+                    const turnCompleted = await this.runWithProcessCheck(() => this.codexAcpClient.resumeGoal(
+                        sessionState.sessionId,
+                        undefined,
+                        (goal) => {
+                            updatedGoal = goal;
+                        },
+                    ));
+                    if (updatedGoal !== null && this.goalPublishIsCurrent(sessionState, sessionGeneration)) {
+                        await this.publishGoalSnapshot(sessionState, toThreadGoalSnapshot(updatedGoal), false);
+                    }
+                    if (turnCompleted === null && updatedGoal !== null) {
+                        await this.startGoalContinuationIfCurrent(
+                            sessionState,
+                            sessionGeneration,
+                            goalControlGeneration,
+                            updatedGoal,
+                        );
                     }
                 } else if (methodRequest.params.action === "clear") {
                     await this.runWithProcessCheck(() => this.codexAcpClient.clearGoal(sessionState.sessionId));
@@ -401,6 +523,12 @@ export class CodexAcpServer {
 
     private getSessionGeneration(sessionId: string): number {
         return this.sessionGenerations.get(sessionId) ?? 0;
+    }
+
+    private bumpGoalControlGeneration(sessionId: string): number {
+        const generation = (this.goalControlGenerations.get(sessionId) ?? 0) + 1;
+        this.goalControlGenerations.set(sessionId, generation);
+        return generation;
     }
 
     private bumpSessionGeneration(sessionId: string): number {
@@ -621,6 +749,7 @@ export class CodexAcpServer {
                 this.pendingTurnStarts.delete(params.sessionId);
                 this.activePrompts.delete(params.sessionId);
                 this.steeringQueues.delete(params.sessionId);
+                this.goalControlGenerations.delete(params.sessionId);
             }
             this.endSessionCloseFence(params.sessionId);
         }
@@ -685,9 +814,11 @@ export class CodexAcpServer {
 
     async authenticate(
         _params: acp.AuthenticateRequest,
+        requestId?: acp.JsonRpcId,
     ): Promise<acp.AuthenticateResponse> {
         logger.log("Authenticate request received");
-        const isAuthenticated = await this.runWithProcessCheck(() => this.codexAcpClient.authenticate(_params));
+        const elicitationRequester = this.createUrlElicitationRequester(requestId);
+        const isAuthenticated = await this.runWithProcessCheck(() => this.codexAcpClient.authenticate(_params, elicitationRequester));
         if (!isAuthenticated) {
             logger.log("Authenticate request failed");
             throw RequestError.invalidParams();
@@ -695,6 +826,19 @@ export class CodexAcpServer {
         await this.refreshSessionsAuthState(null);
         logger.log("Authenticate request completed");
         return { };
+    }
+
+    private createUrlElicitationRequester(requestId?: acp.JsonRpcId): UrlElicitationRequester | undefined {
+        if (requestId == null || !clientSupportsUrlElicitation(this.clientCapabilities)) {
+            return undefined;
+        }
+        return {
+            elicitUrl: (request) => this.connection.request(acp.methods.client.elicitation.create, {
+                mode: "url",
+                requestId,
+                ...request,
+            }),
+        };
     }
 
     async logout(_params: acp.LogoutRequest): Promise<void> {
@@ -917,7 +1061,6 @@ export class CodexAcpServer {
     }
 
     private async steerSession(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
-        const activePrompt = this.activePrompts.get(params.sessionId);
         const response = await this.executeOrQueueSteeringRequest(params);
         if (!params.waitForCompletion || response.outcome === "failed") {
             return response;
@@ -925,6 +1068,7 @@ export class CodexAcpServer {
         if (response.stopReason) {
             return response;
         }
+        const activePrompt = this.activePrompts.get(params.sessionId);
         await activePrompt?.completion;
         return {...response, stopReason: "end_turn"};
     }
@@ -1031,30 +1175,58 @@ export class CodexAcpServer {
      *     requested; throws if the prompt fails or is cancelled before it starts.
      */
     private async startNewTurnFromSteering(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
-        // A prompt can outlive its turn (post-turn cleanup runs before it leaves
-        // activePrompts), so a steer can miss the turn while the prompt is still
-        // winding down. Starting a new turn now would run a second prompt on the
-        // same session, so wait for the current one to drain first (a no-op when idle).
+        await this.startNewTurnFromExternalPrompt(params, "Steering");
+        return {outcome: "startedNewTurn"};
+    }
+
+    private async startGoalContinuationIfCurrent(
+        sessionState: SessionState,
+        sessionGeneration: number,
+        goalControlGeneration: number,
+        expectedGoal: ThreadGoal,
+    ): Promise<void> {
+        await this.startNewTurnFromExternalPrompt({
+            sessionId: sessionState.sessionId,
+            prompt: GOAL_CONTINUATION_PROMPT,
+        }, "Goal continuation", async () => {
+            if (!this.goalPublishIsCurrent(sessionState, sessionGeneration)
+                || this.goalControlGenerations.get(sessionState.sessionId) !== goalControlGeneration) {
+                return false;
+            }
+            const currentGoal = await this.runWithProcessCheck(() => this.codexAcpClient.getGoal(sessionState.sessionId));
+            return currentGoal?.status === "active"
+                && currentGoal.objective === expectedGoal.objective
+                && currentGoal.createdAt === expectedGoal.createdAt
+                && this.goalControlGenerations.get(sessionState.sessionId) === goalControlGeneration;
+        });
+    }
+
+    private async startNewTurnFromExternalPrompt(
+        params: acp.PromptRequest,
+        source: string,
+        canStart: () => Promise<boolean> = async () => true,
+    ): Promise<boolean> {
+        // A prompt can outlive its turn while post-turn cleanup runs. Starting a
+        // control-triggered turn during that window would run two prompts on the
+        // same session, so wait for the current prompt to drain first.
         const previousPrompt = this.activePrompts.get(params.sessionId);
         await previousPrompt?.completion;
         if (this.sessionIsClosing(params.sessionId)) {
             throw RequestError.invalidRequest(`Session ${params.sessionId} is closing`);
         }
-
-        if (params.waitForCompletion) {
-            const response = await this.prompt(params);
-            return {outcome: "startedNewTurn", stopReason: response.stopReason};
+        if (!await canStart()) {
+            return false;
         }
 
-        return await new Promise<SessionSteeringResponse>((resolve, reject) => {
+        return await new Promise<boolean>((resolve, reject) => {
             let turnStarted = false;
             const promptDone = this.prompt(params, undefined, () => {
                 turnStarted = true;
-                logger.log("Steering session started a new turn", {sessionId: params.sessionId});
+                logger.log(`${source} started a new turn`, {sessionId: params.sessionId});
                 // The new turn is now running. This is the success path: answer the
                 // steer immediately ("a turn was started") and let prompt() finish the
                 // turn in the background.
-                resolve({outcome: "startedNewTurn"});
+                resolve(true);
             });
             promptDone.then(
                 (response) => {
@@ -1067,7 +1239,7 @@ export class CodexAcpServer {
                         // resolve in the callback above), or the prompt finished
                         // without ever starting a turn and was not cancelled (e.g. a
                         // command-only turn). Both count as a successfully accepted steer.
-                        resolve({outcome: "startedNewTurn"});
+                        resolve(turnStarted);
                     }
                 },
                 (error: unknown) => {
@@ -1075,7 +1247,7 @@ export class CodexAcpServer {
                         // The turn had already started, so the steer was already
                         // answered "startedNewTurn". This is a failure of a turn running
                         // in the background — nothing to return, just log it.
-                        logger.error(`Steering-started prompt for session ${params.sessionId} failed`, error);
+                        logger.error(`${source} prompt for session ${params.sessionId} failed`, error);
                     } else {
                         // The prompt failed before the turn started. The steer never
                         // took, so surface the failure to the caller.
@@ -1225,9 +1397,7 @@ export class CodexAcpServer {
         await session.update({
             sessionUpdate: "session_info_update",
             _meta: {
-                codex: {
-                    goal: snapshot,
-                },
+                goal: snapshot,
             },
         });
     }
@@ -1439,6 +1609,51 @@ export class CodexAcpServer {
             sessionUpdate: "session_info_update",
             title,
         });
+    }
+
+    private async publishAgentFileChangeReport(
+        sessionState: SessionState,
+        turnId: string | null,
+        request: AgentFileChangeReportRequest,
+        unavailableReason: AgentFileChangeReportUnavailableReason,
+        signal: AbortSignal,
+    ): Promise<void> {
+        let report: AgentFileChangeReport;
+        try {
+            report = turnId === null
+                ? createUnavailableAgentFileChangeReport(request.requestId, unavailableReason)
+                : await this.codexAcpClient.runAgentFileChangeReport({
+                    sessionId: sessionState.sessionId,
+                    turnId,
+                    // The client owns request-id correlation and duplicate suppression. The wrapper
+                    // stays stateless so a retried ACP prompt still receives a terminal report.
+                    requestId: request.requestId,
+                    workspace: {
+                        cwd: sessionState.cwd,
+                        additionalDirectories: sessionState.additionalDirectories,
+                    },
+                    signal,
+                });
+        } catch (error) {
+            logger.error("Agent file-change report failed unexpectedly", error);
+            report = createUnavailableAgentFileChangeReport(request.requestId, "providerError");
+        }
+        try {
+            const session = new ACPSessionConnection(this.connection, sessionState.sessionId);
+            await session.update({
+                sessionUpdate: "session_info_update",
+                _meta: {
+                    [JETBRAINS_META_KEY]: {
+                        [AIR_META_KEY]: {
+                            [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
+                            [AIR_AGENT_FILE_CHANGE_REPORT_KEY]: report,
+                        },
+                    },
+                },
+            });
+        } catch (error) {
+            logger.error("Failed to publish agent file-change report", error);
+        }
     }
 
     private createPromptFallbackTitle(prompt: acp.ContentBlock[]): string | null {
@@ -1911,6 +2126,12 @@ export class CodexAcpServer {
         if (sideChat) {
             return await this.sideChats.prompt(sideChat.request, sessionState, sideChat.scope, signal);
         }
+        const agentFileChangeReportRequest = clientSupportsAgentFileChangeReports(this.clientCapabilities)
+            ? parseAgentFileChangeReportRequest(params._meta)
+            : null;
+        let agentFileChangeReportTurnId: string | null = null;
+        let agentFileChangeReportUnavailableReason: AgentFileChangeReportUnavailableReason = "providerError";
+        let recoverableSessionFailure = sessionState.sessionFailure;
         sessionState.currentTurnId = null;
         sessionState.lastTokenUsage = null;
         const activePrompt = this.trackActivePrompt(params.sessionId);
@@ -1923,20 +2144,61 @@ export class CodexAcpServer {
             return pendingTurnStart;
         };
         const disposePromptRequestCancellation = this.observePromptRequestCancellation(signal, sessionState, activePrompt);
-        let turn: CodexTurn | null = null;
+        let eventHandler: CodexEventHandler | null = null;
+        let promptNotificationsActive = true;
+        const clearRecoveredSessionFailure = async (handler: CodexEventHandler): Promise<void> => {
+            await handler.completeSuccessfulTurn(sessionState.currentTurnId);
+            const current = sessionState.sessionFailure;
+            if (recoverableSessionFailure !== undefined
+                && current !== undefined
+                && current.id === recoverableSessionFailure.id
+                && current.revision === recoverableSessionFailure.revision) {
+                await handler.clearSessionFailure();
+            }
+        };
+        const cancelledPromptResponse = (): acp.PromptResponse => {
+            agentFileChangeReportTurnId = null;
+            agentFileChangeReportUnavailableReason = "cancelled";
+            return this.cancelledPromptResponse(sessionState);
+        };
 
         try {
-            turn = await CodexTurn.prepare(
+            const promptEventHandler = new CodexEventHandler(
                 this.connection,
-                this.codexAcpClient,
+                sessionState,
+                clientSupportsPlanUpdates(this.clientCapabilities),
+                clientSupportsTypedSessionFailures(this.clientCapabilities),
+                this.sessionFailureEpoch,
+            );
+            eventHandler = promptEventHandler;
+            const approvalHandler = new CodexApprovalHandler(this.connection, sessionState, activePrompt.signal);
+            const elicitationHandler = new CodexElicitationHandler(
+                this.connection,
                 sessionState,
                 this.clientCapabilities,
-                operation => this.runWithProcessCheck(operation),
                 activePrompt.signal,
             );
+            await this.codexAcpClient.subscribeToSessionEvents(params.sessionId,
+                async (event) => {
+                    if (!promptNotificationsActive) {
+                        await promptEventHandler.handleSessionScopedNotification(event);
+                        return;
+                    }
+                    const completesActiveTurn = event.method === "turn/completed"
+                        && event.params.turn.id === sessionState.currentTurnId;
+                    await elicitationHandler.handleNotification(event);
+                    await promptEventHandler.handleNotification(event);
+                    if (completesActiveTurn) {
+                        // The prompt may remain open for plan approval after its turn has ended. Switch at
+                        // the causal boundary so a queued late error cannot enter the completed turn's buffer.
+                        promptNotificationsActive = false;
+                    }
+                },
+                approvalHandler,
+                elicitationHandler);
 
             if (activePrompt.signal.aborted) {
-                return this.cancelledPromptResponse(sessionState);
+                return cancelledPromptResponse();
             }
 
             const commandPromise = this.availableCommands.tryHandleCommand(promptCommand, params.prompt, sessionState, {
@@ -1978,15 +2240,39 @@ export class CodexAcpServer {
                 this.cancelBeforeTurnStarted(activePrompt),
             ]);
             if (commandResult === null) {
-                return this.cancelledPromptResponse(sessionState);
+                return cancelledPromptResponse();
             }
             if (commandResult.handled) {
+                promptNotificationsActive = false;
                 logger.log("Prompt handled by a command");
-                await turn.drain();
-                if (commandResult.turnCompleted?.turn.status === "interrupted") {
-                    return this.cancelledPromptResponse(sessionState);
+                await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
+                await eventHandler.flushPendingErrors();
+                await eventHandler.flushPendingErrorsAsSessionScoped();
+                if (commandResult.turnCompleted) {
+                    await eventHandler.handleFailedTurn(commandResult.turnCompleted.turn);
                 }
-                turn.throwIfFailed();
+                if (commandResult.turnCompleted?.turn.status === "interrupted") {
+                    return cancelledPromptResponse();
+                }
+                const error = eventHandler.getFailure();
+                if (error) {
+                    // noinspection ExceptionCaughtLocallyJS
+                    throw error;
+                }
+                const terminalFailure = this.terminalFailurePromptResponse(
+                    sessionState,
+                    eventHandler,
+                    commandResult.turnCompleted?.turn.id ?? sessionState.currentTurnId,
+                );
+                if (terminalFailure) {
+                    return terminalFailure;
+                }
+                if (commandResult.turnCompleted?.turn.status === "completed") {
+                    agentFileChangeReportTurnId = commandResult.turnCompleted.turn.id;
+                } else if (commandResult.turnCompleted === undefined) {
+                    agentFileChangeReportUnavailableReason = "notReported";
+                }
+                await clearRecoveredSessionFailure(eventHandler);
                 return {
                     stopReason: "end_turn",
                     usage: this.buildPromptUsage(sessionState.lastTokenUsage),
@@ -1994,27 +2280,59 @@ export class CodexAcpServer {
                 };
             }
 
+            const effectiveParams = commandResult.modelPrompt === undefined
+                ? params
+                : {...params, prompt: commandResult.modelPrompt};
+
             if (this.sessionIsClosing(params.sessionId)) {
-                return this.cancelledPromptResponse(sessionState);
+                return cancelledPromptResponse();
             }
 
-            const modelPrompt = commandResult.modelPrompt ?? params.prompt;
-            ensurePendingTurnStart();
-            const sendPromptPromise = turn.send(
-                {...params, prompt: modelPrompt},
-                (turnId) => {
-                    const startedTurn = {threadId: params.sessionId, turnId};
-                    activePrompt.currentTurn = startedTurn;
-                    if (this.promptShouldStop(params.sessionId, activePrompt)) {
-                        this.interruptLateStartedTurn(startedTurn);
-                        return;
-                    }
-                    sessionState.currentTurnId = turnId;
-                    pendingTurnStart?.resolve(turnId);
-                    onTurnStarted?.();
-                },
-                () => this.promptShouldStop(params.sessionId, activePrompt),
+            const modelId = ModelId.fromString(sessionState.currentModelId);
+            const modelLacksReasoning = sessionState.supportedReasoningEfforts.length > 0
+                && sessionState.supportedReasoningEfforts.every(e => e.reasoningEffort === "none");
+
+            const disableSummary = sessionState.account?.type === "apiKey" || modelLacksReasoning;
+            if (disableSummary) {
+                logger.log("Disable reasoning.summary", {
+                    sessionId: params.sessionId,
+                    reason: sessionState.account?.type === "apiKey" ? "API key" : "model lacks reasoning"
+                });
+            }
+
+            if (sessionState.supportedInputModalities !== null
+                && !sessionState.supportedInputModalities.includes("image")
+                && effectiveParams.prompt.some(b => b.type === "image")) {
+                throw RequestError.invalidRequest("The current model does not support image input");
+            }
+            const agentMode = sessionState.agentMode;
+            const serviceTier = resolveFastServiceTier(
+                sessionState.fastModeEnabled,
+                sessionState.currentModelSupportsFast,
             );
+            ensurePendingTurnStart();
+            const sendPromptPromise = this.runWithProcessCheck(
+                () => this.codexAcpClient.sendPrompt(
+                    effectiveParams,
+                    agentMode,
+                    modelId,
+                    serviceTier,
+                    disableSummary,
+                    sessionState.cwd,
+                    sessionState.additionalDirectories,
+                    (turnId) => {
+                        const turn = {threadId: params.sessionId, turnId};
+                        activePrompt.currentTurn = turn;
+                        if (this.promptShouldStop(params.sessionId, activePrompt)) {
+                            this.interruptLateStartedTurn(turn);
+                            return;
+                        }
+                        sessionState.currentTurnId = turnId;
+                        pendingTurnStart?.resolve(turnId);
+                        onTurnStarted?.();
+                    },
+                    () => this.promptShouldStop(params.sessionId, activePrompt),
+                ));
             void sendPromptPromise.catch((err) => {
                 if (this.activePrompts.get(params.sessionId) !== activePrompt) {
                     logger.error(`Prompt for cancelled session ${params.sessionId} failed after prompt returned`, err);
@@ -2027,20 +2345,35 @@ export class CodexAcpServer {
             ]);
 
             if (turnCompleted === null) {
-                return this.cancelledPromptResponse(sessionState);
+                return cancelledPromptResponse();
             }
 
-            await turn.drain();
+            await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
+            await eventHandler.flushPendingErrors();
+            await eventHandler.handleFailedTurn(turnCompleted.turn);
+            promptNotificationsActive = false;
 
             if (turnCompleted.turn.status === "interrupted") {
-                await turn.flushPendingPlanUpdates();
-                return this.cancelledPromptResponse(sessionState);
+                await eventHandler.flushPendingPlanUpdates();
+                return cancelledPromptResponse();
             }
 
-            turn.throwIfFailed();
+            const error = eventHandler.getFailure();
+            if (error) {
+                // noinspection ExceptionCaughtLocallyJS
+                throw error;
+            }
+            const terminalFailure = this.terminalFailurePromptResponse(
+                sessionState,
+                eventHandler,
+                turnCompleted.turn.id,
+            );
+            if (terminalFailure) {
+                return terminalFailure;
+            }
 
-            await turn.flushPendingPlanUpdates();
-            const completedPlan = turn.takeCompletedPlan();
+            await eventHandler.flushPendingPlanUpdates();
+            const completedPlan = eventHandler.takeCompletedPlan();
             if (
                 completedPlan !== null
                 && sessionState.collaborationMode === PLAN_COLLABORATION_MODE
@@ -2052,7 +2385,7 @@ export class CodexAcpServer {
                     activePrompt.signal,
                 );
                 if (this.promptShouldStop(params.sessionId, activePrompt)) {
-                    return this.cancelledPromptResponse(sessionState);
+                    return cancelledPromptResponse();
                 }
                 if (approved && !this.promptShouldStop(params.sessionId, activePrompt)) {
                     await this.applyCollaborationModeChange(sessionState, DEFAULT_COLLABORATION_MODE);
@@ -2067,18 +2400,31 @@ export class CodexAcpServer {
                         prompt: [{type: "text", text: "Implement the approved plan."}],
                     };
                     activePrompt.currentTurn = null;
-                    const implementationPromise = turn.send(
-                        implementationRequest,
-                        (turnId) => {
-                            const startedTurn = {threadId: params.sessionId, turnId};
-                            activePrompt.currentTurn = startedTurn;
-                            if (this.promptShouldStop(params.sessionId, activePrompt)) {
-                                this.interruptLateStartedTurn(startedTurn);
-                                return;
-                            }
-                            sessionState.currentTurnId = turnId;
-                        },
-                        () => this.promptShouldStop(params.sessionId, activePrompt),
+                    sessionState.currentTurnId = null;
+                    const implementationPromise = this.runWithProcessCheck(
+                        () => this.codexAcpClient.sendPrompt(
+                            implementationRequest,
+                            agentMode,
+                            modelId,
+                            serviceTier,
+                            disableSummary,
+                            sessionState.cwd,
+                            sessionState.additionalDirectories,
+                            (turnId) => {
+                                const turn = {threadId: params.sessionId, turnId};
+                                activePrompt.currentTurn = turn;
+                                if (this.promptShouldStop(params.sessionId, activePrompt)) {
+                                    this.interruptLateStartedTurn(turn);
+                                    return;
+                                }
+                                sessionState.currentTurnId = turnId;
+                                // Keep the approval-to-turn-start gap session-scoped. Once the new turn has
+                                // an identity, snapshot any unchanged session failure as its recovery baseline.
+                                recoverableSessionFailure = sessionState.sessionFailure;
+                                promptNotificationsActive = true;
+                            },
+                            () => this.promptShouldStop(params.sessionId, activePrompt),
+                        ),
                     );
                     void implementationPromise.catch((err) => {
                         if (this.activePrompts.get(params.sessionId) !== activePrompt) {
@@ -2092,18 +2438,37 @@ export class CodexAcpServer {
                     ]);
 
                     if (turnCompleted === null) {
-                        return this.cancelledPromptResponse(sessionState);
+                        return cancelledPromptResponse();
                     }
 
-                    await turn.drain();
+                    await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
+                    await eventHandler.flushPendingErrors();
+                    await eventHandler.handleFailedTurn(turnCompleted.turn);
+                    promptNotificationsActive = false;
                     if (turnCompleted.turn.status === "interrupted") {
-                        await turn.flushPendingPlanUpdates();
-                        return this.cancelledPromptResponse(sessionState);
+                        await eventHandler.flushPendingPlanUpdates();
+                        return cancelledPromptResponse();
                     }
 
-                    turn.throwIfFailed();
+                    const implementationError = eventHandler.getFailure();
+                    if (implementationError) {
+                        throw implementationError;
+                    }
+                    const implementationFailure = this.terminalFailurePromptResponse(
+                        sessionState,
+                        eventHandler,
+                        turnCompleted.turn.id,
+                    );
+                    if (implementationFailure) {
+                        return implementationFailure;
+                    }
                 }
             }
+            if (turnCompleted.turn.status === "completed") {
+                agentFileChangeReportTurnId = turnCompleted.turn.id;
+            }
+
+            await clearRecoveredSessionFailure(eventHandler);
 
             await this.publishFallbackSessionTitle(
                 sessionState,
@@ -2117,10 +2482,47 @@ export class CodexAcpServer {
             };
         } catch (err) {
             logger.error(`Prompt for session ${params.sessionId} failed`, err);
+            if (activePrompt.signal.aborted || this.sessionIsClosing(params.sessionId)) {
+                return cancelledPromptResponse();
+            }
+            agentFileChangeReportTurnId = null;
+            agentFileChangeReportUnavailableReason = "providerError";
+            const isProcessExit = err instanceof RequestError
+                && err.code === CODEX_PROCESS_EXITED_ERROR_CODE;
+            const isUnexpectedFailure = !(err instanceof RequestError);
+            if (eventHandler !== null
+                && clientSupportsTypedSessionFailures(this.clientCapabilities)
+                && (isProcessExit || isUnexpectedFailure)) {
+                eventHandler.recordSyntheticTerminalFailure(
+                    isProcessExit ? "transport_lost" : "internal_error",
+                    sessionState.currentTurnId,
+                );
+                const failureResponse = this.terminalFailurePromptResponse(
+                    sessionState,
+                    eventHandler,
+                    sessionState.currentTurnId,
+                    true,
+                );
+                if (failureResponse !== null) {
+                    return failureResponse;
+                }
+            }
             throw err;
         } finally {
+            // The app-server subscription is session-scoped and outlives this prompt. Flip routing before
+            // awaiting disposal so queued late notifications cannot enter prompt-local buffers.
+            promptNotificationsActive = false;
+            if (agentFileChangeReportRequest !== null) {
+                await this.publishAgentFileChangeReport(
+                    sessionState,
+                    agentFileChangeReportTurnId,
+                    agentFileChangeReportRequest,
+                    agentFileChangeReportUnavailableReason,
+                    activePrompt.signal,
+                );
+            }
             logger.log("Prompt completed", {sessionId: params.sessionId});
-            await turn?.dispose();
+            await eventHandler?.dispose();
             disposePromptRequestCancellation();
             sessionState.currentTurnId = null;
             const registeredPendingTurnStart = this.pendingTurnStarts.get(params.sessionId);
@@ -2199,6 +2601,25 @@ export class CodexAcpServer {
         };
     }
 
+    private terminalFailurePromptResponse(
+        sessionState: SessionState,
+        eventHandler: CodexEventHandler,
+        turnId: string | null,
+        allowUnattributed = false,
+    ): acp.PromptResponse | null {
+        const failureMeta = eventHandler.getTerminalSessionFailureMeta(turnId, allowUnattributed);
+        if (failureMeta === null) {
+            return null;
+        }
+        return {
+            stopReason: "end_turn",
+            usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+            _meta: {
+                ...this.buildQuotaMeta(sessionState),
+                ...failureMeta,
+            },
+        };
+    }
     private buildQuotaMeta(sessionState: SessionState): { quota: QuotaMeta } {
         const lastTokenUsage = sessionState.lastTokenUsage;
 
@@ -2230,7 +2651,7 @@ export class CodexAcpServer {
             return await operation();
         } catch (err) {
             const exitCode = this.getExitCode();
-            const requestErrorCode = 1001 // Just some magic number
+            const requestErrorCode = CODEX_PROCESS_EXITED_ERROR_CODE;
             if (exitCode == 3221225781) {
                 throw new RequestError(requestErrorCode, `VC++ redistributable should be installed`);
             }

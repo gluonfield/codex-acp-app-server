@@ -3,7 +3,12 @@ import type {
     FuzzyFileSearchSessionUpdatedNotification,
     ServerNotification
 } from "./app-server";
-import type {SessionState} from "./CodexAcpServer";
+import type {
+    SessionFailure,
+    SessionFailureAction,
+    SessionFailureCategory,
+    SessionState,
+} from "./CodexAcpServer";
 import {type PlanEntry, RequestError} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
 import type {
@@ -12,6 +17,7 @@ import type {
     CodexErrorInfo,
     CommandExecutionOutputDeltaNotification,
     ConfigWarningNotification,
+    DeprecationNoticeNotification,
     ErrorNotification,
     ItemGuardianApprovalReviewCompletedNotification,
     ItemGuardianApprovalReviewStartedNotification,
@@ -27,10 +33,11 @@ import type {
     ThreadGoalClearedNotification,
     ThreadGoalUpdatedNotification,
     ThreadTokenUsageUpdatedNotification,
+    Turn,
     TurnPlanUpdatedNotification,
     WarningNotification
 } from "./app-server/v2";
-import type { McpStartupCompleteEvent } from "./app-server";
+import type { McpStartupCompleteEvent } from "./app-server/McpStartupCompleteEvent";
 import {toTokenCount} from "./TokenCount";
 import {
     commandExecutionUsesTerminalOutput,
@@ -64,8 +71,16 @@ import {
     createAgentTextMessageChunk,
     createAgentTextThoughtChunk,
 } from "./ContentChunks";
-import {sameThreadGoalSnapshot, toThreadGoalSnapshot} from "./ThreadGoalSnapshot";
+import {sameThreadGoalSnapshot, type ThreadGoalSnapshot, toThreadGoalSnapshot} from "./ThreadGoalSnapshot";
 import {logger} from "./Logger";
+import {randomUUID} from "node:crypto";
+import {
+    AIR_EXTENSION_VERSION,
+    AIR_EXTENSION_VERSION_KEY,
+    AIR_META_KEY,
+    AIR_SESSION_FAILURE_KEY,
+    JETBRAINS_META_KEY,
+} from "./AirExtension";
 
 export { stripShellPrefix };
 
@@ -74,12 +89,123 @@ export type CompletedPlan = {
     text: string;
 };
 
+type CodexFailureKind =
+    | "transport_lost" | "auth_required" | "rate_limited" | "quota_exhausted" | "overloaded"
+    | "context_exhausted" | "budget_exhausted" | "policy_denied" | "bad_request"
+    | "provider_error" | "internal_error";
+
+type SessionFailurePolicy = {
+    category: SessionFailureCategory;
+    actions: SessionFailureAction[];
+};
+
+const MAX_SESSION_FAILURE_TITLE_LENGTH = 240;
+
+const SESSION_FAILURE_POLICY: Record<CodexFailureKind, SessionFailurePolicy> = {
+    transport_lost: {
+        category: "connection",
+        actions: ["retry", "new_session"],
+    },
+    auth_required: {
+        category: "access",
+        actions: ["login"],
+    },
+    rate_limited: {
+        category: "limit",
+        actions: ["retry"],
+    },
+    quota_exhausted: {
+        category: "limit",
+        actions: [],
+    },
+    overloaded: {
+        category: "service",
+        actions: ["retry"],
+    },
+    context_exhausted: {
+        category: "limit",
+        actions: ["new_session"],
+    },
+    budget_exhausted: {
+        category: "limit",
+        actions: ["new_session"],
+    },
+    policy_denied: {
+        category: "request",
+        actions: [],
+    },
+    bad_request: {
+        category: "request", actions: [],
+    },
+    provider_error: {
+        category: "service",
+        actions: ["retry"],
+    },
+    internal_error: {
+        category: "service",
+        actions: ["retry", "new_session"],
+    },
+};
+
+const SYNTHETIC_FAILURE_TITLE: Record<"transport_lost" | "internal_error", string> = {
+    transport_lost: "Connection to Codex was lost.",
+    internal_error: "Codex encountered an internal error.",
+};
+
+/**
+ * Records sharing an id form one logical banner whose revisions must increase; a new id restarts at 1.
+ */
+function nextSessionFailureRevision(previous: SessionFailure | undefined, id: string): number {
+    return previous?.id === id ? previous.revision + 1 : 1;
+}
+
+type StringCodexErrorInfo = Extract<CodexErrorInfo, string>;
+type StructuredCodexErrorInfo = Exclude<CodexErrorInfo, string>;
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+type StructuredCodexErrorKind = KeysOfUnion<StructuredCodexErrorInfo>;
+
+/**
+ * Exhaustive against the generated app-server union: a schema update cannot silently fall through
+ * to provider_error. The runtime lookup still has a fallback for a newer app-server talking to an
+ * older codex-acp build.
+ */
+const STRING_CODEX_ERROR_CATEGORIES = {
+    contextWindowExceeded: "context_exhausted",
+    sessionBudgetExceeded: "budget_exhausted",
+    usageLimitExceeded: "quota_exhausted",
+    serverOverloaded: "overloaded",
+    cyberPolicy: "policy_denied",
+    internalServerError: "internal_error",
+    unauthorized: "auth_required",
+    badRequest: "bad_request",
+    threadRollbackFailed: "provider_error",
+    sandboxError: "provider_error",
+    other: "provider_error",
+} satisfies Record<StringCodexErrorInfo, CodexFailureKind>;
+
+const STRUCTURED_CODEX_ERROR_CATEGORIES = {
+    httpConnectionFailed: "transport_lost",
+    responseStreamConnectionFailed: "transport_lost",
+    responseStreamDisconnected: "transport_lost",
+    responseTooManyFailedAttempts: "transport_lost",
+    activeTurnNotSteerable: "provider_error",
+} satisfies Record<StructuredCodexErrorKind, CodexFailureKind>;
+
 export class CodexEventHandler {
 
     private static readonly PLAN_UPDATE_INTERVAL_MS = 150;
 
     private readonly sessionState: SessionState;
     private readonly supportsPlanUpdates: boolean;
+    private readonly supportsTypedSessionFailures: boolean;
+    private readonly sessionFailureEpoch: string;
+    private readonly pendingErrors: ErrorNotification[] = [];
+    private readonly failuresById = new Map<string, SessionFailure>();
+    private readonly activeFailureIdByScope = new Map<string, string>();
+    private readonly failureTurnIdById = new Map<string, string | undefined>();
+    private readonly allocatedFailureScopes = new Set<string>();
+    private lastSessionNotice: {key: string; failure: SessionFailure} | undefined;
+    private nextNoticeId = 1;
     private failure: RequestError | null = null;
     private completedPlan: CompletedPlan | null = null;
     private readonly activeFuzzyFileSearchSessions = new Set<string>();
@@ -103,14 +229,127 @@ export class CodexEventHandler {
         connection: AcpClientConnection,
         sessionState: SessionState,
         supportsPlanUpdates = false,
+        supportsTypedSessionFailures = false,
+        sessionFailureEpoch: string = randomUUID(),
     ) {
         this.sessionState = sessionState;
         this.supportsPlanUpdates = supportsPlanUpdates;
+        this.supportsTypedSessionFailures = supportsTypedSessionFailures;
+        this.sessionFailureEpoch = sessionFailureEpoch;
         this.session = new ACPSessionConnection(connection, sessionState.sessionId);
+        if (sessionState.sessionFailure !== undefined) {
+            this.failuresById.set(sessionState.sessionFailure.id, sessionState.sessionFailure);
+        }
     }
 
     getFailure(): RequestError | null {
         return this.failure;
+    }
+
+    getTerminalSessionFailureMeta(
+        turnId: string | null,
+        allowUnattributed = false,
+    ): Record<string, unknown> | null {
+        const failure = this.sessionState.sessionFailure;
+        if (!this.supportsTypedSessionFailures
+            || failure === undefined
+            || (this.failureTurnIdById.get(failure.id) === undefined
+                ? !allowUnattributed
+                : turnId === null || this.failureTurnIdById.get(failure.id) !== turnId)) {
+            return null;
+        }
+        return this.createSessionFailureMeta(failure);
+    }
+
+    recordSyntheticTerminalFailure(kind: "transport_lost" | "internal_error", turnId: string | null): void {
+        this.recordSessionFailure(kind, turnId ?? undefined, "error", SYNTHETIC_FAILURE_TITLE[kind]);
+    }
+
+    /**
+     * Handles notifications after the prompt-local handler has been disposed. The app-server subscription
+     * remains installed until the ACP session closes, so terminal errors need a durable session-level path
+     * instead of entering a turn buffer that will never be flushed.
+     */
+    async handleSessionScopedNotification(notification: ServerNotification): Promise<void> {
+        if (notification.method !== "error") {
+            await this.handleNotification(notification);
+            return;
+        }
+        if (!this.supportsTypedSessionFailures) {
+            // Preserve the legacy behavior for clients that did not negotiate typed failures.
+            await this.handleNotification(notification);
+            return;
+        }
+        if (notification.params.willRetry) {
+            await this.session.update(this.createSessionFailureUpdate(this.recordRetryWarning(notification.params, false)));
+            return;
+        }
+        const failure = this.recordSessionFailure(
+            this.sessionFailureKind(notification.params.error.codexErrorInfo),
+            notification.params.turnId,
+            "error",
+            notification.params.error.message,
+            undefined,
+            false,
+        );
+        await this.session.update(this.createSessionFailureUpdate(failure));
+    }
+
+    async flushPendingErrors(): Promise<void> {
+        if (this.sessionState.currentTurnId === null || this.pendingErrors.length === 0) {
+            return;
+        }
+        const errors = this.pendingErrors.splice(0);
+        for (const error of errors) {
+            const update = await this.createErrorEvent(error);
+            if (update) {
+                await this.session.update(update);
+            }
+        }
+    }
+
+    async flushPendingErrorsAsSessionScoped(): Promise<void> {
+        if (!this.supportsTypedSessionFailures || this.pendingErrors.length === 0) {
+            return;
+        }
+        const errors = this.pendingErrors.splice(0);
+        for (const error of errors) {
+            await this.handleSessionScopedNotification({method: "error", params: error});
+        }
+    }
+
+    async clearSessionFailure(): Promise<void> {
+        delete this.sessionState.sessionFailure;
+    }
+
+    async completeSuccessfulTurn(turnId: string | null): Promise<void> {
+        this.lastSessionNotice = undefined;
+        if (!this.supportsTypedSessionFailures || turnId === null) return;
+        const active = this.sessionState.sessionFailure;
+        if (active?.id !== this.activeFailureIdByScope.get(turnId) || active?.severity !== "warning") return;
+        this.activeFailureIdByScope.delete(turnId);
+        delete this.sessionState.sessionFailure;
+    }
+
+    async handleFailedTurn(turn: Turn): Promise<void> {
+        const activeFailure = this.sessionState.sessionFailure;
+        if (!this.supportsTypedSessionFailures
+            || turn.status !== "failed"
+            || this.failure !== null
+            || this.failureTurnIdById.get(activeFailure?.id ?? "") === turn.id && activeFailure?.severity === "error") {
+            return;
+        }
+        const error = turn.error ?? {
+            message: "Turn failed",
+            codexErrorInfo: null,
+            additionalDetails: null,
+        };
+        this.recordTypedSessionFailure({
+            threadId: this.sessionState.sessionId,
+            turnId: turn.id,
+            willRetry: false,
+            error,
+        });
     }
 
     takeCompletedPlan(): CompletedPlan | null {
@@ -120,6 +359,7 @@ export class CodexEventHandler {
     }
 
     async handleNotification(notification: ServerNotification) {
+        await this.flushPendingErrors();
         const updateEvent = await this.createUpdateEvent(notification);
         if (updateEvent) {
             await this.session.update(updateEvent);
@@ -144,6 +384,14 @@ export class CodexEventHandler {
     async dispose(): Promise<void> {
         if (this.disposed) return;
         await this.flushPendingPlanUpdates();
+        if (this.pendingErrors.length > 0) {
+            logger.log("Discarding app-server errors that arrived before a turn started", {
+                sessionId: this.sessionState.sessionId,
+                count: this.pendingErrors.length,
+                turnIds: this.pendingErrors.map(error => error.turnId),
+            });
+            this.pendingErrors.splice(0);
+        }
         this.disposed = true;
         this.cancelPlanUpdateTimer();
         this.pendingPlanItemIds.clear();
@@ -161,19 +409,25 @@ export class CodexEventHandler {
          */
         switch (notification.method) {
             case "item/agentMessage/delta":
+                this.completeRetryIncidentOnTurnProgress();
                 return await this.createTextEvent(notification.params);
             case "item/plan/delta":
+                this.completeRetryIncidentOnTurnProgress();
                 return this.createPlanDeltaEvent(notification.params);
             case "item/started":
+                this.completeRetryIncidentOnTurnProgress();
                 return await this.createItemEvent(notification.params);
             case "item/completed":
+                this.completeRetryIncidentOnTurnProgress();
                 return await this.completeItemEvent(notification.params);
             case "turn/plan/updated":
+                this.completeRetryIncidentOnTurnProgress();
                 return await this.updatePlan(notification.params);
             case "error":
                 return await this.createErrorEvent(notification.params);
             case "turn/started":
                 this.sessionState.currentTurnId = notification.params.turn.id;
+                await this.flushPendingErrors();
                 return null;
             case "turn/completed":
                 await this.flushPendingPlanUpdates();
@@ -208,8 +462,10 @@ export class CodexEventHandler {
                     closed: true,
                 });
             case "item/commandExecution/outputDelta":
+                this.completeRetryIncidentOnTurnProgress();
                 return this.createCommandOutputDeltaEvent(notification.params);
             case "item/mcpToolCall/progress":
+                this.completeRetryIncidentOnTurnProgress();
                 return this.createMcpToolProgressEvent(notification.params);
             case "account/rateLimits/updated":
                 this.handleRateLimitsUpdated(notification.params);
@@ -220,6 +476,8 @@ export class CodexEventHandler {
                 return this.createWarningEvent(notification.params);
             case "guardianWarning":
                 return null;
+            case "deprecationNotice":
+                return this.createDeprecationNoticeEvent(notification.params);
             case "item/autoApprovalReview/started":
                 return this.handleGuardianApprovalReviewStarted(notification.params);
             case "item/autoApprovalReview/completed":
@@ -227,10 +485,13 @@ export class CodexEventHandler {
             case "thread/compacted":
                 return this.createContextCompactedEvent();
             case "item/reasoning/summaryTextDelta":
+                this.completeRetryIncidentOnTurnProgress();
                 return this.createReasoningDeltaEvent(notification.params);
             case "item/reasoning/textDelta":
+                this.completeRetryIncidentOnTurnProgress();
                 return this.createReasoningDeltaEvent(notification.params);
             case "item/reasoning/summaryPartAdded":
+                this.completeRetryIncidentOnTurnProgress();
                 return this.createReasoningSectionBreakEvent(notification.params);
             case "model/rerouted":
                 return this.createModelReroutedEvent(notification.params);
@@ -273,7 +534,6 @@ export class CodexEventHandler {
             case "windowsSandbox/setupCompleted":
             case "account/login/completed":
             case "skills/changed":
-            case "deprecationNotice":
             case "mcpServer/oauthLogin/completed":
             case "externalAgentConfig/import/completed":
             case "rawResponseItem/completed":
@@ -304,11 +564,29 @@ export class CodexEventHandler {
     }
 
     private async createConfigWarningEvent(event: ConfigWarningNotification): Promise<UpdateSessionEvent> {
-        const detailsText = event.details ? `\n\n${event.details}` : "";
-        return createAgentTextMessageChunk(`Config warning: ${event.summary}${detailsText}\n\n`);
+        if (this.supportsTypedSessionFailures) {
+            return this.createSessionFailureUpdate(this.recordSessionNotice(...this.sessionNoticeContent(event.summary, event.details)));
+        }
+        const text = event.details ? `${event.summary}\n\n${event.details}` : event.summary;
+        return createAgentTextMessageChunk(`Config warning: ${text}\n\n`);
+    }
+
+    /**
+     * Unlike `warning` and `configWarning`, this notification was dropped outright, so there is no
+     * legacy rendering to preserve. It is surfaced only to clients that negotiated typed records;
+     * every other client keeps seeing exactly what it sees today, which is nothing.
+     */
+    private createDeprecationNoticeEvent(event: DeprecationNoticeNotification): UpdateSessionEvent | null {
+        if (!this.supportsTypedSessionFailures) return null;
+        return this.createSessionFailureUpdate(
+            this.recordSessionNotice(...this.sessionNoticeContent(event.summary, event.details)),
+        );
     }
 
     private createWarningEvent(event: WarningNotification): UpdateSessionEvent {
+        if (this.supportsTypedSessionFailures) {
+            return this.createSessionFailureUpdate(this.recordSessionNotice(event.message));
+        }
         return createAgentTextMessageChunk(`Warning: ${event.message}\n\n`);
     }
 
@@ -324,9 +602,7 @@ export class CodexEventHandler {
         }
         this.sessionState.currentGoal = goalSnapshot;
 
-        return this.createCodexSessionInfoUpdate({
-            goal: goalSnapshot,
-        });
+        return this.createGoalSessionInfoUpdate(goalSnapshot);
     }
 
     private createThreadGoalClearedEvent(_event: ThreadGoalClearedNotification): UpdateSessionEvent | null {
@@ -336,9 +612,14 @@ export class CodexEventHandler {
         }
         this.sessionState.currentGoal = null;
 
-        return this.createCodexSessionInfoUpdate({
-            goal: null,
-        });
+        return this.createGoalSessionInfoUpdate(null);
+    }
+
+    private createGoalSessionInfoUpdate(goal: ThreadGoalSnapshot | null): UpdateSessionEvent {
+        return {
+            sessionUpdate: "session_info_update",
+            _meta: {goal},
+        };
     }
 
     private createReasoningDeltaEvent(
@@ -708,9 +989,37 @@ export class CodexEventHandler {
         }
     }
 
-    private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent> {
+    private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent | null> {
         const error = params.error.codexErrorInfo;
+        if (this.sessionState.currentTurnId === null) {
+            this.pendingErrors.push(params);
+            logger.log("Buffered app-server error until the active turn is known", {
+                sessionId: this.sessionState.sessionId,
+                turnId: params.turnId,
+                willRetry: params.willRetry,
+            });
+            return null;
+        }
+        if (params.turnId !== this.sessionState.currentTurnId) {
+            if (this.supportsTypedSessionFailures) {
+                const failure = params.willRetry
+                    ? this.recordRetryWarning(params)
+                    : this.recordSessionFailure(
+                        this.sessionFailureKind(params.error.codexErrorInfo),
+                        params.turnId,
+                        "error",
+                        params.error.message,
+                    );
+                return this.createSessionFailureUpdate(failure);
+            }
+            return this.createCodexSessionInfoUpdate({
+                error: {...params.error, turnId: params.turnId, willRetry: params.willRetry},
+            });
+        }
         if (params.willRetry) {
+            if (this.supportsTypedSessionFailures) {
+                return this.createSessionFailureUpdate(this.recordRetryWarning(params));
+            }
             return this.createCodexSessionInfoUpdate({
                 error: {
                     ...params.error,
@@ -718,7 +1027,14 @@ export class CodexEventHandler {
                     willRetry: true,
                 },
             });
-        } else if (error === "usageLimitExceeded") {
+        }
+        if (this.supportsTypedSessionFailures) {
+            // app-server guarantees willRetry=false interrupts this turn; the terminal failure is
+            // returned once on PromptResponse._meta rather than duplicated as a session update.
+            this.recordTypedSessionFailure(params);
+            return null;
+        }
+        if (error === "usageLimitExceeded") {
             this.failure = RequestError.internalError(
                 this.createTurnErrorData(params.error),
             );
@@ -730,23 +1046,153 @@ export class CodexEventHandler {
         return createAgentTextMessageChunk(`${params.error.message}\n\n`);
     }
 
+    private recordTypedSessionFailure(params: ErrorNotification): void {
+        const kind = this.sessionFailureKind(params.error.codexErrorInfo);
+        this.recordSessionFailure(kind, params.turnId, "error", params.error.message);
+    }
+
+    private recordSessionFailure(
+        kind: CodexFailureKind,
+        turnId: string | undefined,
+        severity: "warning" | "error",
+        title: string,
+        actionsOverride?: SessionFailureAction[],
+        attributeToTurn = true,
+    ): NonNullable<SessionState["sessionFailure"]> {
+        const policy = SESSION_FAILURE_POLICY[kind];
+        const scope = turnId ?? this.sessionState.sessionId;
+        const id = this.activeFailureIdByScope.get(scope)
+            ?? this.allocateFailureId(scope, turnId);
+        const previous = this.failuresById.get(id);
+        const failure: NonNullable<SessionState["sessionFailure"]> = {
+            id,
+            revision: nextSessionFailureRevision(previous, id),
+            category: policy.category,
+            severity,
+            title,
+            actions: actionsOverride ?? policy.actions,
+        };
+        this.failuresById.set(id, failure);
+        this.failureTurnIdById.set(id, attributeToTurn ? turnId : undefined);
+        this.activeFailureIdByScope.set(scope, id);
+        this.sessionState.sessionFailure = failure;
+        this.lastSessionNotice = undefined;
+        return failure;
+    }
+
+    private allocateFailureId(scope: string, turnId: string | undefined): string {
+        if (turnId !== undefined && !this.allocatedFailureScopes.has(scope)) {
+            this.allocatedFailureScopes.add(scope);
+            return `${turnId}:error`;
+        }
+        this.allocatedFailureScopes.add(scope);
+        return `${scope}:error:${this.sessionFailureEpoch}:${this.nextNoticeId++}`;
+    }
+
+    /**
+     * A retry warning remains the active incident until Codex produces turn content again. That content is
+     * the only positive signal available from app-server that the turn recovered; a later error then starts
+     * a new incident instead of overwriting the historical reconnect entry. Terminal errors remain active so
+     * duplicate late notifications cannot append duplicate transcript rows.
+     */
+    private completeRetryIncidentOnTurnProgress(): void {
+        const turnId = this.sessionState.currentTurnId;
+        if (turnId === null) return;
+        const activeId = this.activeFailureIdByScope.get(turnId);
+        if (activeId === undefined || this.failuresById.get(activeId)?.severity !== "warning") return;
+        this.activeFailureIdByScope.delete(turnId);
+        if (this.sessionState.sessionFailure?.id === activeId) {
+            delete this.sessionState.sessionFailure;
+        }
+    }
+
+    private recordRetryWarning(params: ErrorNotification, attributeToTurn = true): SessionFailure {
+        const kind = this.sessionFailureKind(params.error.codexErrorInfo);
+        return this.recordSessionFailure(
+            kind,
+            params.turnId,
+            "warning",
+            params.error.message,
+            [],
+            attributeToTurn,
+        );
+    }
+
+    private recordSessionNotice(title: string, details?: string): SessionFailure {
+        const key = `${title}\u0000${details ?? ""}`;
+        const previous = this.lastSessionNotice?.key === key
+            ? this.lastSessionNotice.failure
+            : undefined;
+        const id = previous?.id
+            ?? `${this.sessionState.sessionId}:notice:${this.sessionFailureEpoch}:${this.nextNoticeId++}`;
+        const notice: SessionFailure = {
+            id,
+            revision: nextSessionFailureRevision(previous, id),
+            category: "unknown",
+            severity: "warning",
+            title,
+            ...(details === undefined ? {} : {details}),
+            actions: [],
+        };
+        this.lastSessionNotice = {key, failure: notice};
+        return notice;
+    }
+
+    private sessionNoticeContent(summary: string, details: string | null): [title: string, details?: string] {
+        if (details === null) return [summary];
+        const combinedTitle = `${summary} — ${details}`;
+        return combinedTitle.length <= MAX_SESSION_FAILURE_TITLE_LENGTH
+            ? [combinedTitle]
+            : [summary, details];
+    }
+
+    private createSessionFailureMeta(
+        failure: NonNullable<SessionState["sessionFailure"]>,
+    ): Record<string, unknown> {
+        return {
+            [JETBRAINS_META_KEY]: {
+                [AIR_META_KEY]: {
+                    [AIR_EXTENSION_VERSION_KEY]: AIR_EXTENSION_VERSION,
+                    [AIR_SESSION_FAILURE_KEY]: failure,
+                },
+            },
+        };
+    }
+
+    private createSessionFailureUpdate(
+        failure: NonNullable<SessionState["sessionFailure"]>,
+    ): UpdateSessionEvent {
+        return {
+            sessionUpdate: "session_info_update",
+            _meta: this.createSessionFailureMeta(failure),
+        };
+    }
+
+    private sessionFailureKind(error: CodexErrorInfo | null): CodexFailureKind {
+        if (this.isAuthenticationRequiredError(error)) return "auth_required";
+        if (this.getHttpStatusCode(error) === 429) return "rate_limited";
+        if (typeof error === "string") {
+            return STRING_CODEX_ERROR_CATEGORIES[error] ?? "provider_error";
+        }
+        if (error !== null) {
+            for (const kind of Object.keys(STRUCTURED_CODEX_ERROR_CATEGORIES) as StructuredCodexErrorKind[]) {
+                if (kind in error) {
+                    return STRUCTURED_CODEX_ERROR_CATEGORIES[kind] ?? "provider_error";
+                }
+            }
+        }
+        return "provider_error";
+    }
+
     private isAuthenticationRequiredError(error: CodexErrorInfo | null): boolean {
         return error === "unauthorized" || this.getHttpStatusCode(error) === 401;
     }
 
     private getHttpStatusCode(error: CodexErrorInfo | null): number | null {
-        if (error !== null && typeof error === "object") {
-            if ("httpConnectionFailed" in error) {
-                return error.httpConnectionFailed.httpStatusCode;
-            } else if ("responseStreamConnectionFailed" in error) {
-                return error.responseStreamConnectionFailed.httpStatusCode;
-            } else if ("responseStreamDisconnected" in error) {
-                return error.responseStreamDisconnected.httpStatusCode;
-            } else if ("responseTooManyFailedAttempts" in error) {
-                return error.responseTooManyFailedAttempts.httpStatusCode;
-            }
-        }
-        return null;
+        if (error === null || typeof error !== "object") return null;
+        const details: unknown = Object.values(error)[0];
+        if (details === null || typeof details !== "object" || !("httpStatusCode" in details)) return null;
+        return typeof details.httpStatusCode === "number" ? details.httpStatusCode : null;
     }
 
     private createTurnErrorData(error: ErrorNotification["error"]): {

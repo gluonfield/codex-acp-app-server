@@ -1,4 +1,4 @@
-import type {ServiceTier} from "./app-server";
+import type {ServiceTier} from "./app-server/ServiceTier";
 import type {ModeKind} from "./app-server/ModeKind";
 import type {Model, Thread} from "./app-server/v2";
 

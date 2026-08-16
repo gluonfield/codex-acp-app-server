@@ -1,10 +1,11 @@
 
-import type {AuthenticateRequest, AuthMethod} from "@agentclientprotocol/sdk";
+import type {AuthenticateRequest, AuthMethod, ClientCapabilities} from "@agentclientprotocol/sdk";
+import {clientSupportsUrlElicitation} from "./ElicitationCapabilities";
 
 export const CODEX_API_KEY_ENV_VAR = "CODEX_API_KEY";
 export const OPENAI_API_KEY_ENV_VAR = "OPENAI_API_KEY";
 
-interface ApiKeyAuthRequest extends AuthenticateRequest {
+export interface ApiKeyAuthRequest extends AuthenticateRequest {
     methodId: "api-key";
     _meta?: {
         "api-key"?: {
@@ -34,16 +35,31 @@ export interface ChatGPTAuthRequest extends AuthenticateRequest {
     methodId: "chat-gpt";
 }
 
-export function getCodexAuthMethods(env: NodeJS.ProcessEnv = process.env): AuthMethod[] {
+const ChatGptDeviceCodeAuthMethod: AuthMethod = {
+    id: "chat-gpt-device-code",
+    name: "ChatGPT (device code)",
+    description: "Sign in to ChatGPT by opening a verification page and entering a one-time code"
+}
+
+export interface ChatGPTDeviceCodeAuthRequest extends AuthenticateRequest {
+    methodId: "chat-gpt-device-code";
+}
+
+export function getCodexAuthMethods(clientCapabilities?: ClientCapabilities | null, env: NodeJS.ProcessEnv = process.env): AuthMethod[] {
     const authMethods: AuthMethod[] = [ApiKeyAuthMethod];
     if (!env["NO_BROWSER"]) {
         authMethods.push(ChatGptAuthMethod);
     }
+    if (clientSupportsUrlElicitation(clientCapabilities)) {
+        authMethods.push(ChatGptDeviceCodeAuthMethod);
+    }
     return authMethods;
 }
 
-export type CodexAuthRequest = ApiKeyAuthRequest | ChatGPTAuthRequest;
+export type CodexAuthRequest = ApiKeyAuthRequest | ChatGPTAuthRequest | ChatGPTDeviceCodeAuthRequest;
 
 export function isCodexAuthRequest(request: AuthenticateRequest): request is CodexAuthRequest {
-    return request.methodId === "api-key" || request.methodId === "chat-gpt";
+    return request.methodId === "api-key"
+        || request.methodId === "chat-gpt"
+        || request.methodId === "chat-gpt-device-code";
 }

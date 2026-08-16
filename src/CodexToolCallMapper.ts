@@ -33,6 +33,7 @@ import {
     type TerminalOutputMode,
 } from "./TerminalOutputMode";
 import {activitySubagent, collaborationSubagents} from "./ProviderSubagent";
+import {createContextCompactionMeta} from "./ContextCompactionMeta";
 
 type CodexItemStatus = CommandExecutionStatus | PatchApplyStatus | McpToolCallStatus | DynamicToolCallStatus | CollabAgentToolCallStatus;
 type AcpToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
@@ -46,7 +47,7 @@ type CommandExecutionItem = ThreadItem & { type: "commandExecution" };
 type ContextCompactionItem = ThreadItem & { type: "contextCompaction" };
 type AcpToolCallEvent = Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }>;
 
-const CONTEXT_COMPACTION_META = { contextCompaction: true };
+const CONTEXT_COMPACTION_META = createContextCompactionMeta();
 
 function toAcpStatus(status: CodexItemStatus): AcpToolCallStatus {
     switch (status) {
@@ -231,8 +232,8 @@ export function createContextCompactionStartUpdate(
     return {
         sessionUpdate: "tool_call",
         toolCallId: item.id,
-        kind: "other",
-        title: "Context compacting",
+        kind: "think",
+        title: "Compact conversation",
         status: "in_progress",
         _meta: CONTEXT_COMPACTION_META,
     };
@@ -244,7 +245,7 @@ export function createContextCompactionCompleteUpdate(
     return {
         sessionUpdate: "tool_call_update",
         toolCallId: item.id,
-        title: "Context compacted",
+        title: "Compact conversation",
         status: "completed",
         _meta: CONTEXT_COMPACTION_META,
     };
@@ -256,8 +257,8 @@ export function createCompletedContextCompactionUpdate(
     return {
         sessionUpdate: "tool_call",
         toolCallId: item.id,
-        kind: "other",
-        title: "Context compacted",
+        kind: "think",
+        title: "Compact conversation",
         status: "completed",
         _meta: CONTEXT_COMPACTION_META,
     };

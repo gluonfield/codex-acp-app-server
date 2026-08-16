@@ -20,6 +20,11 @@ export type CommandHandleResult =
     | { handled: false, modelPrompt?: acp.ContentBlock[] }
     | { handled: true, turnCompleted?: TurnCompletedNotification };
 
+export const GOAL_CONTINUATION_PROMPT: acp.ContentBlock[] = [{
+    type: "text",
+    text: "Continue working toward the active goal.",
+}];
+
 export type CommandHandleOptions = {
     onTurnStartPending?: () => void;
     onTurnStarted?: (turnId: string, threadId: string) => void;
@@ -380,7 +385,7 @@ export class CodexCommands {
 
     private createGoalCommandResult(turnCompleted: TurnCompletedNotification | null): CommandHandleResult {
         if (turnCompleted === null) {
-            return { handled: true };
+            return { handled: false, modelPrompt: GOAL_CONTINUATION_PROMPT };
         }
         return {
             handled: true,

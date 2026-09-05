@@ -64,6 +64,8 @@ function activityState(kind: ActivityItem["kind"]): [ProviderSubagentStatus, str
             return ["running", "Working"];
         case "interrupted":
             return ["cancelled", "Interrupted"];
+        case "completed":
+            return ["completed", "Completed"];
     }
 }
 
@@ -72,10 +74,12 @@ function providerStatus(status: ProviderStatus): ProviderSubagentStatus {
         case "pendingInit":
             return "starting";
         case "inProgress":
+        case "running":
             return "running";
         case "interrupted":
             return "cancelled";
         case "errored":
+        case "failed":
         case "notFound":
             return "failed";
         case "shutdown":
@@ -101,5 +105,13 @@ function collaborationSummary(tool: CollabAgentTool, status: ProviderSubagentSta
             return active ? "Waiting" : "Wait finished";
         case "closeAgent":
             return active ? "Closing" : "Closed";
+        case "sendMessage":
+            return active ? "Sending message" : "Message sent";
+        case "followupTask":
+            return active ? "Following up" : "Follow-up sent";
+        case "interruptAgent":
+            return active ? "Interrupting" : "Interrupted";
+        case "listAgents":
+            return active ? "Listing agents" : "Agents listed";
     }
 }

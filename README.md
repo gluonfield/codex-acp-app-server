@@ -11,10 +11,13 @@ Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol]
 - ChatGPT and API key authentication.
 - Model, reasoning effort, fast mode, approval, and sandbox mode configuration.
 - Text prompts, embedded context, images, resource links, and additional workspace directories.
-- Shell command, file change, permission request, MCP tool call, terminal output, reasoning, plan, web search, image generation, image view, token usage, and review events.
-- Subagent launches as standard ACP tool calls, with Codex thread identity and activity details in `_meta.codex.providerSubagents`.
+- Shell command, file change, [permission request](docs/permission-extension.md), MCP tool call, terminal output, reasoning, plan, web search, image generation, image view, token usage, and review events.
+- [Native ACP subagent sessions](docs/subagent-sessions.md) after capability negotiation, with the standard ACP tool-call fallback otherwise.
+- [Background terminal tasks](docs/async-tasks.md) in AIR, with task status and targeted stop support after capability negotiation.
+- Legacy subagent activity retains Codex thread identity and details in `_meta.codex.providerSubagents`.
 - Ephemeral side conversations backed by Codex `thread/fork`, selected with `_meta.codex.sideChat`.
 - Session-scoped long-running goals through the provider-neutral [goal extension](docs/goal-extension.md).
+- A per-turn [agent file-change report](docs/agent-file-change-report.md) after capability negotiation.
 - Client-provided MCP servers over command-based stdio config and HTTP transport.
 - Slash commands: `/status`, `/mcp`, `/skills`, `/review`, `/review-branch`, `/review-commit`, `/side`, `/btw`, `/init`, `/compact`, `/goal`, and `/logout`, as well as configured skills.
 
@@ -85,6 +88,18 @@ npm run bundle:all
 ```
 
 See [readme-dev.md](readme-dev.md) for local client configuration, binary packaging, and Codex type regeneration.
+
+### Subagent sessions
+
+Subagent sessions follow the draft [ACP subagent RFD](https://github.com/agentclientprotocol/agent-client-protocol/pull/1992) and are enabled only after bilateral capability negotiation during `initialize`. Without native negotiation, the subagent lifecycle stays an ordinary ACP tool call.
+
+See [docs/subagent-sessions.md](docs/subagent-sessions.md) for the negotiation, lifecycle events, `session/load` reconstruction, and legacy fallback details.
+
+### Background terminal tasks
+
+Codex can keep a shell command running after a turn continues. AIR clients can show this work in the Async Tasks panel and stop one command.
+
+See [docs/async-tasks.md](docs/async-tasks.md) for the capability, lifecycle events, and stop request.
 
 ## License
 

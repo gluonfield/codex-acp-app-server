@@ -106,6 +106,7 @@ export function modelFromJazMetadata(metadata: ExactJazModelMetadata): Model {
         defaultReasoningEffort: metadata.defaultReasoningEffort ?? "",
         inputModalities: metadata.inputModalities,
         supportsPersonality: false,
+        multiAgentVersion: null,
         additionalSpeedTiers: [],
         serviceTiers: [],
         defaultServiceTier: null,

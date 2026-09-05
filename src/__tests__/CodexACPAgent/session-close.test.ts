@@ -7,7 +7,7 @@ import {
 } from "../acp-test-utils";
 import type {CodexAcpServer} from "../../CodexAcpServer";
 import type {CodexAcpClient} from "../../CodexAcpClient";
-import type {SessionMetadata} from "../../CodexSessionMetadata";
+import type {SessionMetadata} from "../../SessionMetadata";
 import type {McpStartupResult} from "../../CodexAppServerClient";
 import type {TurnStartResponse} from "../../app-server/v2";
 import type {McpServer} from "@agentclientprotocol/sdk";
@@ -77,6 +77,21 @@ describe("ACP session close", () => {
         })).resolves.toMatchObject({stopReason: "cancelled"});
 
         expect(fixture.getAcpConnectionDump([])).not.toContain("agent_message_chunk");
+    });
+
+    it("does not publish available commands after close completes", async () => {
+        const skills = deferred<{data: []}>();
+        const {fixture, codexAcpAgent} = await createSession({
+            configure: ({codexAcpClient}) => {
+                vi.spyOn(codexAcpClient, "listSkills").mockReturnValue(skills.promise);
+            },
+        });
+
+        await codexAcpAgent.closeSession({sessionId});
+        skills.resolve({data: []});
+        await waitForMicrotasks();
+
+        expect(fixture.getAcpConnectionEvents([])).toEqual([]);
     });
 
     it("does not wait for delayed turn start before closing", async () => {

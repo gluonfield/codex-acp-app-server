@@ -1,6 +1,8 @@
 import {
     type ApiKeyAuthRequest,
     CODEX_API_KEY_ENV_VAR,
+    GatewayAuthMethod,
+    type GatewayAuthRequest,
     isCodexAuthRequest,
     OPENAI_API_KEY_ENV_VAR,
 } from "./CodexAuthMethod";
@@ -30,8 +32,12 @@ import {sanitizeMcpServerName} from "./McpServerName";
 import type {
     AccountLoginCompletedNotification,
     AccountUpdatedNotification,
+    GetAccountRateLimitsResponse,
     GetAccountResponse,
     ListMcpServerStatusResponse,
+    McpServerOauthLoginCompletedNotification,
+    McpServerOauthLoginParams,
+    McpServerOauthLoginResponse,
     Model,
     ReviewTarget,
     SkillsListParams,
@@ -54,7 +60,6 @@ import {
     modelFromJazMetadata,
 } from "./JazModelMetadata";
 import type {JsonObject} from "./JsonObject";
-import type {SessionMetadata, SessionMetadataWithThread} from "./CodexSessionMetadata";
 import {arePathBasenamesEqual, arePathsEqual, isAbsolutePathLike} from "./PathUtils";
 import {
     AGENT_FILE_CHANGE_REPORT_DEVELOPER_INSTRUCTIONS,
@@ -67,12 +72,31 @@ import {
     createReportedAgentFileChangeReport,
     createUnavailableAgentFileChangeReport,
 } from "./AgentFileChangeReport";
+import {CodexSubagentSubscriptions} from "./subagents/CodexSubagentSubscriptions";
+import {forkSession as runForkSession} from "./SessionFork";
+import type {SessionMetadata, SessionMetadataWithThread} from "./SessionMetadata";
+export type {SessionMetadata, SessionMetadataWithThread} from "./SessionMetadata";
+
+/**
+ * Well-known provider id for the client-configurable custom LLM gateway.
+ * This is the only provider exposed through the ACP `providers/*` methods and
+ * the `gateway` auth method; it maps to a Codex `model_providers` entry.
+ */
+export const CUSTOM_GATEWAY_PROVIDER_ID = "custom-gateway";
+export const OPENAI_PROVIDER_ID = "openai";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
+
 export type CreateUrlElicitationRequest = Extract<acp.CreateElicitationRequest, {mode: "url"}>;
 export type UrlElicitationRequest = Omit<CreateUrlElicitationRequest, "mode" | "requestId">;
 
 export interface UrlElicitationRequester {
     elicitUrl(request: UrlElicitationRequest): Promise<acp.CreateElicitationResponse>;
+    completeElicitation(): Promise<void>;
 }
+
+const SUPPORTED_GATEWAY_PROTOCOLS: Record<acp.LlmProtocol, WireApi> = {
+    openai: "responses",
+};
 
 /**
  * API for accessing the Codex App Server using ACP requests.
@@ -83,9 +107,17 @@ export class CodexAcpClient {
     private readonly config: JsonObject;
     private readonly modelProvider: string | null;
     private readonly modelMetadata: ExactJazModelMetadata | null;
+    private gatewayConfig: GatewayConfig | null;
+    /**
+     * Where the stored gateway routing came from: the `gateway` auth method
+     * (agent-owned authentication) or the ACP `providers/*` API (client-driven
+     * routing). `authStatus` reports only the agent-owned one.
+     */
+    private gatewayConfigSource: GatewayConfigSource | null;
     private pendingLoginCompleted: Promise<AccountLoginCompletedNotification> | null = null;
     private pendingAccountUpdated: Promise<AccountUpdatedNotification> | null = null;
     private readonly sessionNotificationQueues = new Map<string, Promise<void>>();
+    private readonly subagents: CodexSubagentSubscriptions;
     private skillExtraRoots: string[] = [];
     private configPath: string | null = null;
 
@@ -93,15 +125,25 @@ export class CodexAcpClient {
     constructor(
         codexClient: CodexAppServerClient,
         codexConfig?: JsonObject,
+        modelProvider?: string,
         modelMetadata?: ExactJazModelMetadata | null,
     ) {
         this.codexClient = codexClient;
         this.config = codexConfig ?? {};
-        const modelProvider = this.config["model_provider"];
-        this.modelProvider = typeof modelProvider === "string" && modelProvider.trim()
-            ? modelProvider.trim()
-            : null;
+        const configuredProvider = this.config["model_provider"];
+        this.modelProvider = modelProvider ?? (
+            typeof configuredProvider === "string" && configuredProvider.trim()
+                ? configuredProvider.trim()
+                : null
+        );
         this.modelMetadata = modelMetadata ?? null;
+        this.gatewayConfig = null;
+        this.gatewayConfigSource = null;
+        this.subagents = new CodexSubagentSubscriptions(codexClient);
+    }
+
+    get appServerClient(): CodexAppServerClient {
+        return this.codexClient;
     }
 
     private readonly defaultClientInfo: ClientInfo = {
@@ -140,6 +182,8 @@ export class CodexAcpClient {
                 `Codex account authentication is unavailable for model provider ${this.getModelProvider()}`,
             );
         }
+        this.gatewayConfig = null;
+        this.gatewayConfigSource = null;
         switch (authRequest.methodId) {
             case "api-key":
                 return await this.authenticateWithApiKey(authRequest);
@@ -147,6 +191,8 @@ export class CodexAcpClient {
                 return await this.authenticateWithChatGpt();
             case "chat-gpt-device-code":
                 return await this.authenticateWithChatGptDeviceCode(urlElicitationRequester);
+            case "gateway":
+                return this.authenticateWithGateway(authRequest);
         }
     }
 
@@ -188,19 +234,52 @@ export class CodexAcpClient {
         if (loginResponse.type !== "chatgptDeviceCode") {
             return false;
         }
-        const elicitationResponse = await urlElicitationRequester.elicitUrl({
+        const elicitationResponsePromise = Promise.resolve(urlElicitationRequester.elicitUrl({
             url: loginResponse.verificationUrl,
             message: `Sign in to ChatGPT and enter this code: ${loginResponse.userCode}`,
             elicitationId: loginResponse.loginId,
-        });
-        if (!acp.CreateElicitationResponse.isAccept(elicitationResponse)) {
+        }));
+        const first = await Promise.race([
+            loginCompletedPromise.then(result => ({
+                type: "loginCompleted" as const,
+                result,
+            })),
+            elicitationResponsePromise.then(response => ({
+                type: "elicitationResponse" as const,
+                response,
+            })),
+        ]);
+
+        if (first.type === "loginCompleted") {
+            await urlElicitationRequester.completeElicitation();
+            return first.result.success;
+        }
+
+        if (!acp.CreateElicitationResponse.isAccept(first.response)) {
             await this.codexClient.accountLoginCancel({loginId: loginResponse.loginId});
             return false;
         }
+
         const result = await loginCompletedPromise;
+        await urlElicitationRequester.completeElicitation();
         return result.success;
     }
 
+    private authenticateWithGateway(authRequest: GatewayAuthRequest): boolean {
+        if (!authRequest._meta) throw RequestError.invalidRequest();
+
+        const gatewaySettings = authRequest._meta["gateway"];
+        if (!gatewaySettings) throw RequestError.invalidRequest();
+
+        this.applyGatewayConfig({
+            baseUrl: gatewaySettings.baseUrl,
+            apiType: GatewayAuthMethod._meta.gateway.protocol,
+            headers: gatewaySettings.headers,
+            providerName: gatewaySettings.providerName,
+        }, "authentication");
+
+        return true;
+    }
     private readApiKeyFromEnv(): string {
         for (const envVar of [CODEX_API_KEY_ENV_VAR, OPENAI_API_KEY_ENV_VAR]) {
             const value = process.env[envVar]?.trim();
@@ -247,6 +326,11 @@ export class CodexAcpClient {
         }
     }
 
+    /**
+     * The provider that actually serves requests, ACP-configured gateway
+     * routing included. Use {@link getAgentConfiguredModelProvider} instead
+     * when asking what the agent itself is configured with (`authStatus`).
+     */
     async getCurrentModelProvider(): Promise<string | null> {
         const sessionModelProvider = this.getModelProvider();
         if (sessionModelProvider !== null) {
@@ -278,8 +362,181 @@ export class CodexAcpClient {
         return response.requiresOpenaiAuth && !response.account;
     }
 
+    /**
+     * Validates and stores custom gateway routing. Shared by the `gateway` auth
+     * method and the ACP `providers/set` method. Throws `invalid_params` for an
+     * unsupported protocol or a malformed base URL.
+     */
+    private applyGatewayConfig(params: {
+        baseUrl: string;
+        headers?: Record<string, string> | undefined;
+        providerName?: string | undefined;
+        apiType: acp.LlmProtocol;
+    }, source: GatewayConfigSource): void {
+        const apiType = params.apiType;
+        const wireApi = SUPPORTED_GATEWAY_PROTOCOLS[apiType];
+        if (!wireApi) {
+            throw RequestError.invalidParams(
+                {apiType},
+                `Unsupported provider apiType "${apiType}"; supported: ${Object.keys(SUPPORTED_GATEWAY_PROTOCOLS).join(", ")}`,
+            );
+        }
+        if (typeof params.baseUrl !== "string" || params.baseUrl.trim().length === 0) {
+            throw RequestError.invalidParams(undefined, "baseUrl must be a non-empty string");
+        }
+        const providerName = typeof params.providerName === "string" && params.providerName.trim().length > 0
+            ? params.providerName
+            : "User-provided gateway";
+        const headers: Record<string, string> = {
+            "X-Client-Feature-ID": "codex",
+            ...params.headers,
+        };
+
+        this.gatewayConfigSource = source;
+        this.gatewayConfig = {
+            modelProvider: CUSTOM_GATEWAY_PROVIDER_ID,
+            config: {
+                name: providerName,
+                base_url: params.baseUrl,
+                http_headers: headers,
+                wire_api: wireApi,
+            },
+        };
+    }
+
+    /**
+     * `providers/list`: returns Codex's OpenAI slot. With no ACP override, the
+     * slot reports native OpenAI routing; headers are never exposed.
+     */
+    listProviders(): acp.ProviderInfo[] {
+        const gatewayConfig = this.gatewayConfig;
+        const current: acp.ProviderCurrentConfig = gatewayConfig
+            ? {
+                apiType: gatewayApiTypeFromConfig(gatewayConfig),
+                baseUrl: gatewayConfig.config.base_url,
+            }
+            : this.getNativeProviderConfig();
+        logger.log("providers/list", {
+            providerId: OPENAI_PROVIDER_ID,
+            overrideActive: gatewayConfig !== null,
+            apiType: current.apiType,
+            baseUrl: current.baseUrl,
+        });
+        return [
+            {
+                providerId: OPENAI_PROVIDER_ID,
+                supported: Object.keys(SUPPORTED_GATEWAY_PROTOCOLS),
+                required: false,
+                current,
+            },
+        ];
+    }
+
+    private getNativeProviderConfig(): acp.ProviderCurrentConfig {
+        const configuredProviderId = this.modelProvider ??
+            (typeof this.config["model_provider"] === "string" ? this.config["model_provider"] : null);
+        const configuredProviders = this.config["model_providers"];
+        if (configuredProviderId && configuredProviders && typeof configuredProviders === "object" && !Array.isArray(configuredProviders)) {
+            const configuredProvider = (configuredProviders as Record<string, unknown>)[configuredProviderId];
+            if (configuredProvider && typeof configuredProvider === "object" && !Array.isArray(configuredProvider)) {
+                const baseUrl = (configuredProvider as Record<string, unknown>)["base_url"];
+                if (typeof baseUrl === "string" && baseUrl.length > 0) {
+                    return {apiType: "openai", baseUrl};
+                }
+            }
+        }
+        return {apiType: "openai", baseUrl: DEFAULT_OPENAI_BASE_URL};
+    }
+
+    /**
+     * `providers/set`: replaces the full configuration for the custom gateway
+     * provider. Rejects unknown provider ids with `invalid_params`.
+     */
+    setProvider(request: acp.SetProviderRequest): void {
+        if (request.providerId !== OPENAI_PROVIDER_ID) {
+            throw RequestError.invalidParams(
+                {providerId: request.providerId},
+                `Unknown providerId "${request.providerId}"; only "${OPENAI_PROVIDER_ID}" is configurable`,
+            );
+        }
+        this.applyGatewayConfig({
+            apiType: request.apiType,
+            baseUrl: request.baseUrl,
+            headers: request.headers,
+        }, "acpProviders");
+        logger.log("providers/set applied", {
+            providerId: request.providerId,
+            apiType: request.apiType,
+            baseUrl: request.baseUrl,
+            headerNames: Object.keys(request.headers ?? {}),
+        });
+    }
+
+    /**
+     * `providers/disable`: disables the custom gateway provider. Disabling an
+     * unknown provider id is idempotent success (RFD behavior §7).
+     */
+    disableProvider(request: acp.DisableProviderRequest): void {
+        const overrideWasActive = this.gatewayConfig !== null;
+        if (request.providerId === OPENAI_PROVIDER_ID) {
+            this.gatewayConfig = null;
+            this.gatewayConfigSource = null;
+        }
+        const current = this.gatewayConfig
+            ? {
+                apiType: gatewayApiTypeFromConfig(this.gatewayConfig),
+                baseUrl: this.gatewayConfig.config.base_url,
+            }
+            : this.getNativeProviderConfig();
+        logger.log("providers/disable applied", {
+            providerId: request.providerId,
+            knownProvider: request.providerId === OPENAI_PROVIDER_ID,
+            overrideWasActive,
+            overrideActive: this.gatewayConfig !== null,
+            restoredApiType: current.apiType,
+            restoredBaseUrl: current.baseUrl,
+        });
+    }
     async getAccount(): Promise<GetAccountResponse> {
         return this.codexClient.accountRead({refreshToken: false});
+    }
+
+    async getRateLimits(): Promise<GetAccountRateLimitsResponse> {
+        return this.codexClient.accountRateLimitsRead();
+    }
+
+    /**
+     * Presentable name of the gateway the agent itself authenticated against
+     * (the `gateway` auth method), or `null`. Routing that the client
+     * configured through `providers/set` is deliberately not reported here:
+     * `authStatus` describes the agent-owned login only.
+     */
+    getAuthGatewayProviderName(): string | null {
+        return this.gatewayConfigSource === "authentication"
+            ? this.gatewayConfig?.config.name ?? null
+            : null;
+    }
+
+    /** Whether this provider id is client-driven routing set through `providers/set`. */
+    isClientConfiguredProvider(providerId: string | null): boolean {
+        return providerId === CUSTOM_GATEWAY_PROVIDER_ID && this.gatewayConfigSource === "acpProviders";
+    }
+
+    /**
+     * The model provider the agent itself is configured with (launch option or
+     * Codex config), ignoring any ACP-configured gateway routing. The
+     * routing-aware counterpart is {@link getCurrentModelProvider}.
+     */
+    async getAgentConfiguredModelProvider(): Promise<string | null> {
+        const provider = this.getModelProvider();
+        // Routing set through `providers/set` is the client's, not the agent's:
+        // look past it to what the agent itself was started/configured with.
+        const agentProvider = this.isClientConfiguredProvider(provider) ? this.modelProvider : provider;
+        if (agentProvider !== null) {
+            return agentProvider;
+        }
+        const settingsModelProvider = await this.codexClient.configRead({includeLayers: false});
+        return settingsModelProvider?.config?.model_provider ?? null;
     }
 
     async resumeSession(request: acp.ResumeSessionRequest, onSubscribed?: () => void): Promise<SessionMetadata> {
@@ -305,6 +562,21 @@ export class CodexAcpClient {
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
         }
+    }
+
+    async forkSession(request: acp.ForkSessionRequest): Promise<SessionMetadata> {
+        const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
+        return await runForkSession(request, additionalDirectories, {
+            codexClient: this.codexClient,
+            refreshSkills: (cwd, directories) => this.refreshSkills(cwd, directories),
+            createSessionConfig: (cwd, directories, mcpServers) =>
+                this.createSessionConfig(cwd, directories, mcpServers),
+            getResumeModelProvider: () => this.getResumeModelProvider(),
+            fetchAvailableModels: () => this.fetchAvailableModels(),
+            createCurrentModelId: (models, model, reasoningEffort) =>
+                this.createModelId(models, model, reasoningEffort).toString(),
+            getCollaborationMode: sessionId => this.getCollaborationMode(sessionId),
+        });
     }
 
     async loadSession(request: acp.LoadSessionRequest, onSubscribed?: () => void): Promise<SessionMetadataWithThread> {
@@ -340,23 +612,27 @@ export class CodexAcpClient {
         };
     }
 
+    async readSessionThread(sessionId: string): Promise<Thread> {
+        return (await this.codexClient.threadRead({
+            threadId: sessionId,
+            includeTurns: true,
+        })).thread;
+    }
+
     async newSession(request: acp.NewSessionRequest): Promise<SessionMetadata> {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
         await this.refreshSkills(request.cwd, additionalDirectories);
 
-        const [config, codexModels] = await Promise.all([
-            this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers),
-            this.fetchAvailableModels(),
-        ]);
-        if (codexModels.length === 0) {
-            throw new Error("Codex did not return any models");
-        }
         const response = await this.codexClient.threadStart({
-            config,
+            config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers),
             modelProvider: this.getModelProvider(),
             cwd: request.cwd,
         });
 
+        const codexModels = await this.fetchAvailableModels();
+        if (codexModels.length === 0) {
+            throw new Error("Codex did not return any models");
+        }
         const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
         return {
             sessionId: response.thread.id,
@@ -389,6 +665,7 @@ export class CodexAcpClient {
             response = await this.codexClient.threadFork({
                 threadId: parent.sessionId,
                 ephemeral: true,
+                excludeTurns: true,
                 developerInstructions: instructions,
             });
         } else {
@@ -421,11 +698,16 @@ export class CodexAcpClient {
             await this.codexClient.threadUnsubscribe({threadId: sessionId});
         } finally {
             this.codexClient.clearThreadHandlers(sessionId);
+            this.subagents.clear(sessionId);
         }
     }
 
     async deleteSession(sessionId: string): Promise<void> {
         await this.codexClient.threadArchive({threadId: sessionId});
+    }
+
+    async renameSession(sessionId: string, name: string): Promise<void> {
+        await this.codexClient.threadSetName({ threadId: sessionId, name });
     }
 
     async runReview(
@@ -513,8 +795,21 @@ export class CodexAcpClient {
         mcpServers: Array<McpServer>
     ): Promise<JsonObject> {
         const sessionRoots = [projectPath, ...additionalDirectories];
+        const activeProvider = this.gatewayConfig
+            ? {
+                apiType: gatewayApiTypeFromConfig(this.gatewayConfig),
+                baseUrl: this.gatewayConfig.config.base_url,
+            }
+            : this.getNativeProviderConfig();
+        logger.log("Creating session config", {
+            projectPath,
+            overrideActive: this.gatewayConfig !== null,
+            modelProvider: this.getModelProvider(),
+            apiType: activeProvider.apiType,
+            baseUrl: activeProvider.baseUrl,
+        });
         const mergedConfig = {
-            ...this.config,
+            ...mergeGatewayConfig(this.config, this.gatewayConfig),
             projects: Object.fromEntries(sessionRoots.map(root => [root, {
                 trust_level: "trusted",
             }])),
@@ -559,7 +854,7 @@ export class CodexAcpClient {
     }
 
     getModelProvider(): string | null {
-        return this.modelProvider;
+        return this.gatewayConfig?.modelProvider ?? this.modelProvider;
     }
 
     usesOpenAiAccountAuth(): boolean {
@@ -658,34 +953,28 @@ export class CodexAcpClient {
         sessionId: string,
         eventHandler: (result: ServerNotification) => void | Promise<void>,
         approvalHandler: ApprovalHandler,
-        elicitationHandler: ElicitationHandler
+        elicitationHandler: ElicitationHandler,
+        supportsSubagents: boolean,
+        observeInteraction: (result: ServerNotification) => void | Promise<void>,
+        waitForChildSession: (childThreadId: string) => Promise<string | null>,
     ) {
-        this.codexClient.onServerNotification(sessionId, (event) => {
+        const dispatch = (event: ServerNotification) => {
             this.enqueueSessionNotification(sessionId, () => eventHandler(event));
-        });
-        this.codexClient.onApprovalRequest(sessionId, {
-            handleCommandExecution: async (params) => {
-                await this.waitForSessionNotifications(sessionId);
-                return await approvalHandler.handleCommandExecution(params);
+        };
+        this.subagents.subscribe({
+            rootSessionId: sessionId,
+            supportsSubagents,
+            dispatch,
+            enqueueInteraction: (event) => {
+                // Child observation uses the same serialized, error-reporting queue
+                // as ordinary session notifications; callers intentionally do not
+                // await the callback registered with app-server.
+                this.enqueueSessionNotification(sessionId, () => observeInteraction(event));
             },
-            handleFileChange: async (params) => {
-                await this.waitForSessionNotifications(sessionId);
-                return await approvalHandler.handleFileChange(params);
-            },
-            handlePermissionsRequest: async (params) => {
-                await this.waitForSessionNotifications(sessionId);
-                return await approvalHandler.handlePermissionsRequest(params);
-            },
-        });
-        this.codexClient.onElicitationRequest(sessionId, {
-            handleElicitation: async (params) => {
-                await this.waitForSessionNotifications(sessionId);
-                return await elicitationHandler.handleElicitation(params);
-            },
-            handleUserInput: async (params) => {
-                await this.waitForSessionNotifications(sessionId);
-                return await elicitationHandler.handleUserInput(params);
-            },
+            approvalHandler,
+            elicitationHandler,
+            waitForRootNotifications: () => this.waitForSessionNotifications(sessionId),
+            waitForChildSession,
         });
     }
 
@@ -736,6 +1025,7 @@ export class CodexAcpClient {
             threadId: request.sessionId,
             input: input,
             approvalPolicy: agentMode.approvalPolicy,
+            approvalsReviewer: agentMode.approvalsReviewer,
             sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),
             summary: disableSummary ? "none" : null,
             effort: modelId.effort,
@@ -798,22 +1088,9 @@ export class CodexAcpClient {
             });
             const outcome = await budget.wait(turnPromise);
             auditTurnCompleted = true;
-            const thread = await budget.wait(this.codexClient.threadRead({
-                threadId: forkThreadId,
-                includeTurns: true,
-            }));
-            const completedTurn = thread.thread.turns.find(
-                turn => turn.id === outcome.turn.id,
-            );
-            if (completedTurn === undefined) {
-                throw new AgentFileChangeReportError(
-                    "notReported",
-                    "The completed audit turn was not present in thread history",
-                );
-            }
             return createReportedAgentFileChangeReport(
                 params.requestId,
-                completedTurn,
+                outcome.turn,
                 params.workspace,
             );
         } catch (error) {
@@ -830,7 +1107,7 @@ export class CodexAcpClient {
                 return createUnavailableAgentFileChangeReport(params.requestId, error.reason);
             }
             if (error instanceof AgentFileChangeReportError) {
-                logger.log("Agent file-change report unavailable", {reason: error.reason});
+                logger.error("Agent file-change report unavailable", error);
                 return createUnavailableAgentFileChangeReport(params.requestId, error.reason);
             }
             logger.error("Agent file-change report failed", error);
@@ -939,6 +1216,19 @@ export class CodexAcpClient {
         return this.codexClient.listMcpServerStatus({});
     }
 
+    async mcpServerOauthLogin(
+        params: McpServerOauthLoginParams,
+    ): Promise<McpServerOauthLoginResponse> {
+        return await this.codexClient.mcpServerOauthLogin(params);
+    }
+
+    async awaitMcpServerOauthLoginCompleted(
+        name: string,
+        threadId: string,
+    ): Promise<McpServerOauthLoginCompletedNotification> {
+        return await this.codexClient.awaitMcpServerOauthLoginCompleted(name, threadId);
+    }
+
     async listSessions(request: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
         const sourceKinds: ThreadSourceKind[] = [
             "cli",
@@ -963,6 +1253,11 @@ export class CodexAcpClient {
             modelProviders: modelProviders,
             sourceKinds: sourceKinds,
         });
+
+        if (listResponse.data.length === 0) {
+            const diagnostics = await this.runSessionListDiagnostics();
+            logger.log("Session list diagnostics", diagnostics);
+        }
 
         const mapThreadToSession = (thread: Thread) => ({
             sessionId: thread.id,
@@ -1016,6 +1311,29 @@ export class CodexAcpClient {
             cursor = response.nextCursor;
         } while (cursor);
         return models;
+    }
+
+    private async runSessionListDiagnostics(): Promise<Record<string, unknown>> {
+        const [allProviders, archivedAllProviders, customGateway] = await Promise.all([
+            this.codexClient.threadList({}),
+            this.codexClient.threadList({archived: true}),
+            this.codexClient.threadList({modelProviders: [CUSTOM_GATEWAY_PROVIDER_ID]}),
+        ]);
+
+        return {
+            allProviders: {
+                count: allProviders.data.length,
+                nextCursor: allProviders.nextCursor ?? null,
+            },
+            archivedAllProviders: {
+                count: archivedAllProviders.data.length,
+                nextCursor: archivedAllProviders.nextCursor ?? null,
+            },
+            customGateway: {
+                count: customGateway.data.length,
+                nextCursor: customGateway.nextCursor ?? null,
+            },
+        };
     }
 
 }
@@ -1143,6 +1461,39 @@ function formatUriAsLink(name: string | null | undefined, uri: string): string {
 function shouldDeduplicateMcpConflicts(): boolean {
     const disabledByEnv = process.env["DISABLE_MCP_CONFIG_FILTERING"] === "true";
     return !disabledByEnv;
+}
+
+type WireApi = "responses";
+
+type GatewayConfigSource = "authentication" | "acpProviders";
+
+interface GatewayConfig {
+    modelProvider: string;
+    config: {
+        name: string,
+        base_url: string,
+        http_headers: Record<string, string>,
+        wire_api: WireApi
+    }
+}
+
+function gatewayApiTypeFromConfig(gatewayConfig: GatewayConfig): acp.LlmProtocol {
+    const wireApi = gatewayConfig.config.wire_api;
+    const match = Object.entries(SUPPORTED_GATEWAY_PROTOCOLS).find(([, wire]) => wire === wireApi);
+    return match?.[0] ?? "openai";
+}
+
+function mergeGatewayConfig(config: JsonObject, gatewayConfig: GatewayConfig | null): JsonObject {
+    if (gatewayConfig === null) {
+        return config;
+    }
+    const merged = {...config};
+    const providers = isJsonObject(merged["model_providers"])
+        ? {...merged["model_providers"]}
+        : {};
+    providers[gatewayConfig.modelProvider] = gatewayConfig.config;
+    merged["model_providers"] = providers;
+    return merged;
 }
 
 function readMetaAdditionalRoots(meta?: Record<string, unknown> | null): string[] | undefined {

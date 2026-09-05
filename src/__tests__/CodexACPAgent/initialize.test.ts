@@ -42,6 +42,7 @@ describe('CodexACPAgent - initialize', () => {
                 auth: {
                     logout: {},
                 },
+                providers: {},
                 loadSession: true,
                 promptCapabilities: {
                     embeddedContext: true,
@@ -52,12 +53,17 @@ describe('CodexACPAgent - initialize', () => {
                     list: {},
                     close: {},
                     delete: {},
+                    fork: {},
                     additionalDirectories: {},
+                    subagents: {},
                 },
                 mcpCapabilities: {
                     acp: false,
                     http: true,
                     sse: false,
+                },
+                _meta: {
+                    authStatus: {},
                 },
             },
             authMethods: getCodexAuthMethods(),
@@ -74,7 +80,7 @@ describe('CodexACPAgent - initialize', () => {
                 jetbrains: {
                     air: {
                         version: 1,
-                        capabilities: ["sessionFailure", "agentFileChangeReport"],
+                        capabilities: ["sessionFailure", "agentFileChangeReport", "nativeSubagentSessions", "asyncTasks"],
                     },
                 },
             },
@@ -163,7 +169,7 @@ describe('CodexACPAgent - initialize', () => {
             nextCursor: null,
         });
 
-        const exact = new CodexAcpClient(appServer, {model_provider: "openrouter"}, {
+        const exact = new CodexAcpClient(appServer, {model_provider: "openrouter"}, undefined, {
             id: "custom",
             displayName: "Custom",
             description: null,

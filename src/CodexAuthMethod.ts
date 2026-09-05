@@ -45,6 +45,29 @@ export interface ChatGPTDeviceCodeAuthRequest extends AuthenticateRequest {
     methodId: "chat-gpt-device-code";
 }
 
+export const GatewayAuthMethod = {
+    id: "gateway",
+    name: "Custom model gateway",
+    description: "Use a custom gateway to authenticate and access models",
+    _meta: {
+        "gateway": {
+            protocol: "openai",
+            restartRequired: "false"
+        }
+    }
+}
+
+export interface GatewayAuthRequest extends AuthenticateRequest {
+    methodId: "gateway";
+    _meta: {
+        "gateway": {
+            baseUrl: string;
+            headers: Record<string, string>;
+            providerName?: string;
+        }
+    };
+}
+
 export function getCodexAuthMethods(clientCapabilities?: ClientCapabilities | null, env: NodeJS.ProcessEnv = process.env): AuthMethod[] {
     const authMethods: AuthMethod[] = [ApiKeyAuthMethod];
     if (!env["NO_BROWSER"]) {
@@ -53,13 +76,17 @@ export function getCodexAuthMethods(clientCapabilities?: ClientCapabilities | nu
     if (clientSupportsUrlElicitation(clientCapabilities)) {
         authMethods.push(ChatGptDeviceCodeAuthMethod);
     }
+    if (clientCapabilities?.auth?._meta?.["gateway"] === true) {
+        authMethods.push(GatewayAuthMethod);
+    }
     return authMethods;
 }
 
-export type CodexAuthRequest = ApiKeyAuthRequest | ChatGPTAuthRequest | ChatGPTDeviceCodeAuthRequest;
+export type CodexAuthRequest = ApiKeyAuthRequest | ChatGPTAuthRequest | ChatGPTDeviceCodeAuthRequest | GatewayAuthRequest;
 
 export function isCodexAuthRequest(request: AuthenticateRequest): request is CodexAuthRequest {
     return request.methodId === "api-key"
         || request.methodId === "chat-gpt"
-        || request.methodId === "chat-gpt-device-code";
+        || request.methodId === "chat-gpt-device-code"
+        || request.methodId === "gateway";
 }

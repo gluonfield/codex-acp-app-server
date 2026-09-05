@@ -1,15 +1,17 @@
 import * as acp from "@agentclientprotocol/sdk";
 import type {AcpClientConnection} from "./ACPSessionConnection";
 import {CodexAcpClient} from "./CodexAcpClient";
-import {CodexApprovalHandler} from "./CodexApprovalHandler";
+import {CodexApprovalHandler} from "./permissions/CodexApprovalHandler";
 import {CodexElicitationHandler} from "./CodexElicitationHandler";
 import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
 import type {SessionState} from "./CodexAcpServer";
+import type {ServerNotification} from "./app-server";
 import type {TurnCompletedNotification} from "./app-server/v2";
 import {resolveFastServiceTier} from "./FastModeConfig";
 import {logger} from "./Logger";
 import {ModelId} from "./ModelId";
 import {clientSupportsPlanUpdates} from "./PlanCapabilities";
+import {PermissionLifecycleContext} from "./permissions/lifecycle";
 
 export class CodexTurn {
     private constructor(
@@ -32,21 +34,29 @@ export class CodexTurn {
             state,
             clientSupportsPlanUpdates(clientCapabilities),
         );
-        const approvals = new CodexApprovalHandler(connection, state, signal);
+        const permissionContext = new PermissionLifecycleContext(state).beginPrompt();
+        const approvals = new CodexApprovalHandler(connection, permissionContext, signal);
         const elicitations = new CodexElicitationHandler(
             connection,
-            state,
+            permissionContext,
             clientCapabilities,
             signal,
         );
+        const observeInteraction = async (event: ServerNotification) => {
+            permissionContext.handleNotification(event);
+            await elicitations.handleNotification(event);
+        };
         await codex.subscribeToSessionEvents(
             state.sessionId,
             async event => {
-                await elicitations.handleNotification(event);
+                await observeInteraction(event);
                 await events.handleNotification(event);
             },
             approvals,
             elicitations,
+            false,
+            observeInteraction,
+            async () => null,
         );
         return new CodexTurn(codex, state, events, run);
     }

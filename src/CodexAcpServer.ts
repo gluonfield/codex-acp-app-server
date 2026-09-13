@@ -1,3 +1,4 @@
+import { MCP_REFRESH_METHOD, parseMcpRefreshRequest } from "./mcp-refresh";
 import * as acp from "@agentclientprotocol/sdk";
 import {RequestError, type SessionId, type SessionModeState} from "@agentclientprotocol/sdk";
 import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
@@ -265,6 +266,7 @@ export interface CodexProcessState {
 export class CodexAcpServer {
     private codexAcpClient: CodexAcpClient;
     private readonly connection: AcpClientConnection;
+    private readonly mcpRefreshEnabled = process.env["CODEX_ACP_MCP_REFRESH"] === "1";
     private readonly defaultAuthRequest: CodexAuthRequest | null;
     private readonly getExitCode: () => number | null;
     private readonly getRecentStderr: () => string;
@@ -386,6 +388,7 @@ export class CodexAcpServer {
                     sse: false
                 },
                 _meta: {
+                    ...(this.mcpRefreshEnabled ? {mcpRefresh: {method: MCP_REFRESH_METHOD}} : {}),
                     // Presence means "this agent pushes `_auth/status_update`". It
                     // never carries a payload, and the client never asks for one.
                     [AUTH_STATUS_META_KEY]: authStatusCapability(),
@@ -419,6 +422,20 @@ export class CodexAcpServer {
     }
 
     async extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+        if (method === MCP_REFRESH_METHOD) {
+            if (!this.mcpRefreshEnabled) {
+                throw RequestError.invalidParams(undefined, "MCP refresh requires a validated native runtime and CODEX_ACP_MCP_REFRESH=1");
+            }
+            const request = parseMcpRefreshRequest(params);
+            if (this.providerUpdate !== null) {
+                await this.providerUpdate;
+            }
+            if (!this.sessions.has(request.sessionId)) {
+                throw RequestError.invalidParams(undefined, `Unknown session: ${request.sessionId}`);
+            }
+            await this.runWithProcessCheck(() => this.codexAcpClient.refreshMcpServers());
+            return {};
+        }
         const methodRequest = { method: method, params: params };
         if (!isExtMethodRequest(methodRequest)) {
             return {};

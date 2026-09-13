@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { MCP_REFRESH_METHOD, parseMcpRefreshRequest } from "./mcp-refresh";
 
 import * as acp from "@agentclientprotocol/sdk";
 import {z} from "zod";
@@ -180,6 +181,7 @@ function startAcpServer() {
         .onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params))
         .onRequest(LEGACY_SET_SESSION_MODEL_METHOD, legacySetSessionModelParamsParser, (ctx) => getAgent().extMethod(LEGACY_SET_SESSION_MODEL_METHOD, ctx.params))
         .onRequest(SESSION_STEERING_METHOD, sessionSteerParamsParser, (ctx) => getAgent().extMethod(SESSION_STEERING_METHOD, ctx.params))
+        .onRequest(MCP_REFRESH_METHOD, { parse: parseMcpRefreshRequest }, (ctx) => getAgent().extMethod(MCP_REFRESH_METHOD, ctx.params))
         .onRequest(ASYNC_TASK_STOP_METHOD, asyncTaskStopParamsParser, (ctx) => getAgent().extMethod(ASYNC_TASK_STOP_METHOD, ctx.params))
         .onRequest(GOAL_CONTROL_METHOD, goalControlParamsParser, (ctx) => getAgent().extMethod(GOAL_CONTROL_METHOD, ctx.params))
         .connect(acpJsonStream);

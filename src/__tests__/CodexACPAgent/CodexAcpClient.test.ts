@@ -4200,3 +4200,35 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
     });
 });
+
+describe("MCP catalog refresh", () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it("rejects refresh unless the native runtime was explicitly enabled", async () => {
+        vi.stubEnv("CODEX_ACP_MCP_REFRESH", "");
+        const fixture = createCodexMockTestFixture();
+        const wire = vi.spyOn(fixture.getCodexAppServerClient().connection, "sendRequest");
+        await expect(fixture.getCodexAcpAgent().extMethod("_session/mcp/refresh", {
+            sessionId: "session",
+            serverNames: ["jaz_mcp"],
+        })).rejects.toThrow("validated native runtime");
+        expect(wire).not.toHaveBeenCalled();
+    });
+
+    it("reloads native MCP configuration without replacing the session or prompting", async () => {
+        vi.stubEnv("CODEX_ACP_MCP_REFRESH", "1");
+        const fixture = createCodexMockTestFixture();
+        const server = fixture.getCodexAcpAgent();
+        const session = createTestSessionState({sessionId: "refresh-session"});
+        // @ts-expect-error - register the fixture at the session ownership boundary
+        server.sessions.set(session.sessionId, session);
+        const wire = vi.spyOn(fixture.getCodexAppServerClient().connection, "sendRequest").mockResolvedValue({});
+        await expect(server.extMethod("_session/mcp/refresh", {sessionId: session.sessionId, serverNames: ["jaz_mcp"]})).resolves.toEqual({});
+        expect(wire).toHaveBeenCalledExactlyOnceWith("config/mcpServer/reload");
+        expect(server.getSessionState(session.sessionId)).toBe(session);
+        wire.mockRejectedValueOnce(new Error("refresh failed"));
+        await expect(server.extMethod("_session/mcp/refresh", {sessionId: session.sessionId, serverNames: ["jaz_mcp"]})).rejects.toThrow("refresh failed");
+        await expect(server.extMethod("_session/mcp/refresh", {sessionId: "missing", serverNames: ["jaz_mcp"]})).rejects.toThrow("Unknown session");
+        await expect(server.extMethod("_session/mcp/refresh", {sessionId: session.sessionId, serverNames: []})).rejects.toThrow("requires");
+    });
+});

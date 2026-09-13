@@ -665,6 +665,10 @@ export class CodexAppServerClient {
         return await this.sendRequest({ method: "thread/goal/clear", params: params });
     }
 
+    async refreshMcpServers(): Promise<void> {
+        await this.sendRequest({ method: "config/mcpServer/reload", params: undefined });
+    }
+
     async listMcpServerStatus(params: ListMcpServerStatusParams): Promise<ListMcpServerStatusResponse> {
         return await this.sendRequest({ method: "mcpServerStatus/list", params });
     }

@@ -1218,6 +1218,10 @@ export class CodexAcpClient {
         });
     }
 
+    async refreshMcpServers(): Promise<void> {
+        await this.codexClient.refreshMcpServers();
+    }
+
     async listMcpServers(): Promise<ListMcpServerStatusResponse> {
         return this.codexClient.listMcpServerStatus({});
     }

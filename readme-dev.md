@@ -12,6 +12,7 @@ Set `CODEX_PATH` to run a different Codex binary; versions other than the one sp
 - `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `agent`, or `agent-full-access`.
 - `NO_BROWSER` - hide browser-based ChatGPT auth when set.
 - `APP_SERVER_LOGS` - directory for adapter logs.
+- `CODEX_ACP_MCP_REFRESH=1` - advertise `_session/mcp/refresh` for a separately verified native runtime that reconnects unchanged MCP servers on `config/mcpServer/reload`. Leave unset with bundled Codex 0.154.0: it acknowledges reload but retains the old catalog. The native operation refreshes every loaded thread and configured server.
 
 ### Quick start
 

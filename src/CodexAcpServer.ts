@@ -131,7 +131,7 @@ import {
     toThreadGoalSnapshot,
 } from "./ThreadGoalSnapshot";
 import {parseSideChatPrompt, SideChatManager} from "./SideChatManager";
-import {parsePromptCommand} from "./PromptCommand";
+import {parsePromptCommand, type PromptCommand} from "./PromptCommand";
 import type {SessionMetadata, SessionMetadataWithThread} from "./SessionMetadata";
 import type {JsonObject} from "./JsonObject";
 import type {ExactJazModelMetadata} from "./JazModelMetadata";
@@ -238,15 +238,18 @@ interface PendingTurnStart {
     resolve: (turnId: string | null) => void;
 }
 
+type PromptCompletion = Promise<PromiseSettledResult<acp.PromptResponse>>
+type SteeringResult = SessionSteeringResponse & {completion?: PromptCompletion | undefined}
+
 interface ActivePrompt {
-    completion: Promise<void>;
+    completion: PromptCompletion;
     closeSignal: Promise<null>;
     cancelSignal: Promise<null>;
     signal: AbortSignal;
     currentTurn: { threadId: string, turnId: string } | null;
     requestCancel: () => void;
     requestClose: () => void;
-    complete: () => void;
+    complete: (result: PromiseSettledResult<acp.PromptResponse>) => void;
 }
 
 export interface CodexProcessState {
@@ -279,7 +282,7 @@ export class CodexAcpServer {
     private readonly pendingMcpStartupSessions: Map<string, PendingMcpStartupSession>;
     private readonly pendingTurnStarts: Map<string, PendingTurnStart>;
     private readonly activePrompts: Map<string, ActivePrompt>;
-    private readonly steeringQueues: Map<string, SteeringQueue>;
+    private readonly steeringQueues: Map<string, SteeringQueue<SteeringResult>>;
     private readonly closingSessions: Map<string, number>;
     private readonly sessionGenerations: Map<string, number>;
     private readonly sessionOpenGenerations: Map<string, number>;
@@ -1510,7 +1513,7 @@ export class CodexAcpServer {
      *     new one ("startedNewTurn"), or could not be applied ("failed"); see
      *     {@link performSteeringRequest}.
      */
-    async executeOrQueueSteeringRequest(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
+    async executeOrQueueSteeringRequest(params: SessionSteerRequest): Promise<SteeringResult> {
         const queue = this.getSteeringQueue(params.sessionId);
         try {
             return await queue.enqueue(params);
@@ -1528,16 +1531,18 @@ export class CodexAcpServer {
     }
 
     private async steerSession(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
-        const response = await this.executeOrQueueSteeringRequest(params);
+        const {completion, ...response} = await this.executeOrQueueSteeringRequest(params)
         if (!params.waitForCompletion || response.outcome === "failed") {
-            return response;
+            return response
         }
-        if (response.stopReason) {
-            return response;
+        if (!completion) {
+            throw new Error("Steering completed without a tracked prompt result")
         }
-        const activePrompt = this.activePrompts.get(params.sessionId);
-        await activePrompt?.completion;
-        return {...response, stopReason: "end_turn"};
+        const result = await completion
+        if (result.status === "rejected") {
+            throw result.reason
+        }
+        return {...response, stopReason: result.value.stopReason}
     }
 
     /**
@@ -1547,7 +1552,7 @@ export class CodexAcpServer {
      * @param sessionId The session whose steering queue is required.
      * @returns The session's existing queue, or a freshly created one.
      */
-    private getSteeringQueue(sessionId: string): SteeringQueue {
+    private getSteeringQueue(sessionId: string): SteeringQueue<SteeringResult> {
         let queue = this.steeringQueues.get(sessionId);
         if (!queue) {
             queue = new SteeringQueue((params) => this.performSteeringRequest(params));
@@ -1564,7 +1569,7 @@ export class CodexAcpServer {
      * @returns "injected" when the prompt joined an existing turn, otherwise the
      *     outcome of starting a new turn.
      */
-    private async performSteeringRequest(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
+    private async performSteeringRequest(params: SessionSteerRequest): Promise<SteeringResult> {
         logger.log("Steering session requested", {
             sessionId: params.sessionId,
             prompt: params.prompt,
@@ -1574,10 +1579,11 @@ export class CodexAcpServer {
 
         const turnId = await this.getSteerableTurnId(sessionState);
         if (turnId) {
+            const completion = this.activePrompts.get(params.sessionId)?.completion
             const injected = await this.injectSteerIntoActiveTurn(params, turnId, sessionState);
             if (injected) {
                 logger.log("Steering session injected", {sessionId: params.sessionId, turnId});
-                return {outcome: "injected"};
+                return {outcome: "injected", completion};
             }
         }
         return await this.startNewTurnFromSteering(params);
@@ -1641,9 +1647,9 @@ export class CodexAcpServer {
      * @returns "startedNewTurn", with the stop reason when completion was
      *     requested; throws if the prompt fails or is cancelled before it starts.
      */
-    private async startNewTurnFromSteering(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
-        await this.startNewTurnFromExternalPrompt(params, "Steering");
-        return {outcome: "startedNewTurn"};
+    private async startNewTurnFromSteering(params: SessionSteerRequest): Promise<SteeringResult> {
+        const started = await this.startNewTurnFromExternalPrompt(params, "Steering")
+        return started ? {outcome: "startedNewTurn", ...started} : {outcome: "failed"}
     }
 
     private async startGoalContinuationIfCurrent(
@@ -1672,57 +1678,46 @@ export class CodexAcpServer {
         params: acp.PromptRequest,
         source: string,
         canStart: () => Promise<boolean> = async () => true,
-    ): Promise<boolean> {
-        // A prompt can outlive its turn while post-turn cleanup runs. Starting a
-        // control-triggered turn during that window would run two prompts on the
-        // same session, so wait for the current prompt to drain first.
-        const previousPrompt = this.activePrompts.get(params.sessionId);
-        await previousPrompt?.completion;
+    ): Promise<{completion: PromptCompletion} | null> {
+        const previousPrompt = this.activePrompts.get(params.sessionId)
+        await previousPrompt?.completion
         if (this.sessionIsClosing(params.sessionId)) {
-            throw RequestError.invalidRequest(`Session ${params.sessionId} is closing`);
+            throw RequestError.invalidRequest(`Session ${params.sessionId} is closing`)
         }
         if (!await canStart()) {
-            return false;
+            return null
         }
 
-        return await new Promise<boolean>((resolve, reject) => {
-            let turnStarted = false;
-            const promptDone = this.prompt(params, undefined, () => {
-                turnStarted = true;
-                logger.log(`${source} started a new turn`, {sessionId: params.sessionId});
-                // The new turn is now running. This is the success path: answer the
-                // steer immediately ("a turn was started") and let prompt() finish the
-                // turn in the background.
-                resolve(true);
-            });
-            promptDone.then(
-                (response) => {
-                    if (!turnStarted && response.stopReason === "cancelled") {
-                        // The prompt ended without the turn ever starting, because it
-                        // was cancelled. The steer never took, so fail the request.
-                        reject(RequestError.invalidRequest(`Session ${params.sessionId} was cancelled before the steering turn started`));
-                    } else {
-                        // Either the turn already started (this is a no-op after the
-                        // resolve in the callback above), or the prompt finished
-                        // without ever starting a turn and was not cancelled (e.g. a
-                        // command-only turn). Both count as a successfully accepted steer.
-                        resolve(turnStarted);
-                    }
-                },
-                (error: unknown) => {
-                    if (turnStarted) {
-                        // The turn had already started, so the steer was already
-                        // answered "startedNewTurn". This is a failure of a turn running
-                        // in the background — nothing to return, just log it.
-                        logger.error(`${source} prompt for session ${params.sessionId} failed`, error);
-                    } else {
-                        // The prompt failed before the turn started. The steer never
-                        // took, so surface the failure to the caller.
-                        reject(error);
-                    }
-                },
-            );
-        });
+        let accept: () => void = () => {}
+        let reject: (error: unknown) => void = () => {}
+        const accepted = new Promise<void>((resolve, fail) => {
+            accept = resolve
+            reject = fail
+        })
+        let turnStarted = false
+        const promptDone = this.prompt(params, undefined, () => {
+            turnStarted = true
+            logger.log(`${source} started a new turn`, {sessionId: params.sessionId})
+            accept()
+        })
+        promptDone.then(
+            response => {
+                if (!turnStarted && response.stopReason === "cancelled") {
+                    reject(RequestError.invalidRequest(`Session ${params.sessionId} was cancelled before the steering turn started`))
+                } else {
+                    accept()
+                }
+            },
+            error => {
+                if (turnStarted) {
+                    logger.error(`${source} prompt for session ${params.sessionId} failed`, error)
+                } else {
+                    reject(error)
+                }
+            },
+        )
+        await accepted
+        return {completion: Promise.allSettled([promptDone]).then(([result]) => result)}
     }
 
     private isNoActiveTurnToSteerError(error: unknown): boolean {
@@ -2573,8 +2568,8 @@ export class CodexAcpServer {
     }
 
     private trackActivePrompt(sessionId: string): ActivePrompt {
-        let resolveCompletion: () => void = () => {};
-        const completion = new Promise<void>((resolve) => {
+        let resolveCompletion: (result: PromiseSettledResult<acp.PromptResponse>) => void = () => {}
+        const completion: PromptCompletion = new Promise((resolve) => {
             resolveCompletion = resolve;
         });
         let resolveCloseSignal: (value: null) => void = () => {};
@@ -2610,7 +2605,7 @@ export class CodexAcpServer {
                 activePrompt.requestCancel();
                 resolveCloseSignal(null);
             },
-            complete: () => {
+            complete: result => {
                 if (completed) {
                     return;
                 }
@@ -2618,7 +2613,7 @@ export class CodexAcpServer {
                 if (this.activePrompts.get(sessionId) === activePrompt) {
                     this.activePrompts.delete(sessionId);
                 }
-                resolveCompletion();
+                resolveCompletion(result)
             },
         };
 
@@ -2806,6 +2801,23 @@ export class CodexAcpServer {
         if (sideChat) {
             return await this.sideChats.prompt(sideChat.request, sessionState, sideChat.scope, signal);
         }
+        const activePrompt = this.trackActivePrompt(params.sessionId)
+        const [result] = await Promise.allSettled([this.runPrompt(params, sessionState, activePrompt, promptCommand, signal, onTurnStarted)])
+        activePrompt.complete(result)
+        if (result.status === "rejected") {
+            throw result.reason
+        }
+        return result.value
+    }
+
+    private async runPrompt(
+        params: acp.PromptRequest,
+        sessionState: SessionState,
+        activePrompt: ActivePrompt,
+        promptCommand: PromptCommand | null,
+        signal?: AbortSignal,
+        onTurnStarted?: () => void,
+    ): Promise<acp.PromptResponse> {
         const agentFileChangeReportRequest = clientSupportsAgentFileChangeReports(this.clientCapabilities)
             ? parseAgentFileChangeReportRequest(params._meta)
             : null;
@@ -2814,7 +2826,6 @@ export class CodexAcpServer {
         let promptWasCancelled = false;
         let recoverableSessionFailure = sessionState.sessionFailure;
         sessionState.currentTurnId = null;
-        const activePrompt = this.trackActivePrompt(params.sessionId);
         let pendingTurnStart: PendingTurnStart | null = null;
         const ensurePendingTurnStart = (): PendingTurnStart => {
             if (pendingTurnStart === null) {
@@ -3272,7 +3283,6 @@ export class CodexAcpServer {
                 this.pendingTurnStarts.delete(params.sessionId);
                 registeredPendingTurnStart.resolve(null);
             }
-            activePrompt.complete();
         }
     }
 

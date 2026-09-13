@@ -6,13 +6,13 @@ import type {SessionState} from "../../CodexAcpServer";
 import type {TurnCompletedNotification} from "../../app-server/v2";
 import {SESSION_STEERING_METHOD} from "../../AcpExtensions";
 
-function createTurn(id: string, status: "inProgress" | "completed" | "interrupted") {
+function createTurn(id: string, status: "inProgress" | "completed" | "interrupted" | "failed") {
     return {
         id,
         items: [],
         itemsView: "notLoaded" as const,
         status,
-        error: null,
+        error: status === "failed" ? {message: "provider failure", codexErrorInfo: "usageLimitExceeded" as const, additionalDetails: null, misalignment: null} : null,
         startedAt: null,
         completedAt: null,
         durationMs: null,
@@ -88,7 +88,7 @@ describe('_session/steering', () => {
         await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
     });
 
-    it('keeps a completion-aware steer open until the injected turn finishes', async () => {
+    it.each(["completed", "interrupted", "failed"] as const)('preserves %s completion for an injected steer', async (status) => {
         const {mockFixture, sessionState, turnCompleted} = startActiveTurn();
         vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer")
             .mockResolvedValue({turnId: "turn-id"});
@@ -107,19 +107,62 @@ describe('_session/steering', () => {
             waitForCompletion: true,
         });
         let settled = false;
-        void steerPromise.finally(() => {
-            settled = true;
-        });
+        void steerPromise.then(
+            () => {
+                settled = true
+            },
+            () => {
+                settled = true
+            },
+        )
         await new Promise(resolve => setTimeout(resolve, 0));
         expect(settled).toBe(false);
 
-        turnCompleted.resolve({
-            threadId: "session-id",
-            turn: createTurn("turn-id", "completed"),
-        });
-        await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
-        await expect(steerPromise).resolves.toEqual({outcome: "injected", stopReason: "end_turn"});
+        const turn = createTurn("turn-id", status)
+        if (turn.error) {
+            mockFixture.sendServerNotification({
+                method: "error",
+                params: {threadId: "session-id", turnId: turn.id, willRetry: false, error: turn.error},
+            })
+        }
+        turnCompleted.resolve({threadId: "session-id", turn})
+        const results = await Promise.allSettled([promptPromise, steerPromise])
+        if (status === "failed") {
+            for (const result of results) {
+                expect(result).toMatchObject({status: "rejected", reason: {code: -32603, data: {message: "provider failure"}}})
+            }
+        } else {
+            const stopReason = status === "interrupted" ? "cancelled" : "end_turn"
+            expect(results[0]).toMatchObject({status: "fulfilled", value: {stopReason}})
+            expect(results[1]).toEqual({status: "fulfilled", value: {outcome: "injected", stopReason}})
+        }
     });
+
+    it('retains the result when the turn completes before steering is acknowledged', async () => {
+        const {mockFixture, sessionState, turnCompleted} = startActiveTurn()
+        const acknowledgement = deferred<{turnId: string}>()
+        const turnSteer = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer")
+            .mockReturnValue(acknowledgement.promise)
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "long running prompt"}],
+        })
+        await vi.waitFor(() => {
+            expect(sessionState.currentTurnId).toBe("turn-id")
+        })
+        const steerPromise = mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "racing follow-up"}],
+            waitForCompletion: true,
+        })
+        await vi.waitFor(() => {
+            expect(turnSteer).toHaveBeenCalled()
+        })
+        turnCompleted.resolve({threadId: "session-id", turn: createTurn("turn-id", "interrupted")})
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"})
+        acknowledgement.resolve({turnId: "turn-id"})
+        await expect(steerPromise).resolves.toEqual({outcome: "injected", stopReason: "cancelled"})
+    })
 
     it('starts a new turn when no turn is active', async () => {
         const mockFixture = createCodexMockTestFixture();
@@ -150,7 +193,7 @@ describe('_session/steering', () => {
         });
     });
 
-    it('keeps a completion-aware late steer open for the turn it starts', async () => {
+    it.each(["completed", "interrupted", "failed"] as const)('preserves %s completion for a late steer', async (status) => {
         const mockFixture = createCodexMockTestFixture();
         const sessionState = createTestSessionState();
         vi.spyOn(mockFixture.getCodexAcpAgent(), "getSessionState").mockReturnValue(sessionState);
@@ -169,17 +212,31 @@ describe('_session/steering', () => {
             expect(sessionState.currentTurnId).toBe("new-turn-id");
         });
         let settled = false;
-        void steerPromise.finally(() => {
-            settled = true;
-        });
+        void steerPromise.then(
+            () => {
+                settled = true
+            },
+            () => {
+                settled = true
+            },
+        )
         await new Promise(resolve => setTimeout(resolve, 0));
         expect(settled).toBe(false);
 
-        turnCompleted.resolve({
-            threadId: "session-id",
-            turn: createTurn("new-turn-id", "completed"),
-        });
-        await expect(steerPromise).resolves.toEqual({outcome: "startedNewTurn", stopReason: "end_turn"});
+        const turn = createTurn("new-turn-id", status)
+        if (turn.error) {
+            mockFixture.sendServerNotification({
+                method: "error",
+                params: {threadId: "session-id", turnId: turn.id, willRetry: false, error: turn.error},
+            })
+        }
+        turnCompleted.resolve({threadId: "session-id", turn})
+        if (status === "failed") {
+            await expect(steerPromise).rejects.toMatchObject({code: -32603, data: {message: "provider failure"}})
+        } else {
+            const stopReason = status === "interrupted" ? "cancelled" : "end_turn"
+            await expect(steerPromise).resolves.toEqual({outcome: "startedNewTurn", stopReason})
+        }
     });
 
     it('starts a new turn when Codex reports that the tracked turn is no longer active', async () => {
@@ -225,7 +282,7 @@ describe('_session/steering', () => {
         });
     });
 
-    it('serializes concurrent late steering requests without dropping either prompt', async () => {
+    it.each([false, true])('serializes concurrent late steering requests with waitForCompletion=%s', async (waitForCompletion) => {
         const mockFixture = createCodexMockTestFixture();
         const sessionState = createTestSessionState();
         vi.spyOn(mockFixture.getCodexAcpAgent(), "getSessionState").mockReturnValue(sessionState);
@@ -240,16 +297,17 @@ describe('_session/steering', () => {
         const firstRequest = mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
             sessionId: "session-id",
             prompt: [{type: "text", text: "first late follow-up"}],
+            waitForCompletion,
         });
         const secondRequest = mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
             sessionId: "session-id",
             prompt: [{type: "text", text: "second late follow-up"}],
+            waitForCompletion,
         });
 
-        await expect(Promise.all([firstRequest, secondRequest])).resolves.toEqual([
-            {outcome: "startedNewTurn"},
-            {outcome: "injected"},
-        ]);
+        await vi.waitFor(() => {
+            expect(turnSteerSpy).toHaveBeenCalled()
+        })
         expect(turnSteerSpy).toHaveBeenCalledWith({
             threadId: "session-id",
             expectedTurnId: "new-turn-id",
@@ -260,9 +318,11 @@ describe('_session/steering', () => {
             threadId: "session-id",
             turn: createTurn("new-turn-id", "completed"),
         });
-        await vi.waitFor(() => {
-            expect(sessionState.currentTurnId).toBeNull();
-        });
+        const completion = waitForCompletion ? {stopReason: "end_turn"} : {}
+        await expect(Promise.all([firstRequest, secondRequest])).resolves.toEqual([
+            {outcome: "startedNewTurn", ...completion},
+            {outcome: "injected", ...completion},
+        ])
     });
 
     it('reports failed instead of throwing when steering hits an unexpected error', async () => {

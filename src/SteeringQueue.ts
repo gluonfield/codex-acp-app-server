@@ -1,8 +1,8 @@
-import type {SessionSteerRequest, SessionSteeringResponse} from "./AcpExtensions";
+import type {SessionSteerRequest} from "./AcpExtensions";
 
-interface QueuedSteering {
+interface QueuedSteering<Result> {
     params: SessionSteerRequest;
-    resolve: (response: SessionSteeringResponse) => void;
+    resolve: (response: Result) => void;
     reject: (error: unknown) => void;
 }
 
@@ -11,16 +11,16 @@ interface QueuedSteering {
  * enqueue(); a single consumer loop runs them one at a time, in arrival order,
  * so two concurrent steers can never race to start rival turns.
  */
-export class SteeringQueue {
-    private readonly pending: QueuedSteering[] = [];
+export class SteeringQueue<Result> {
+    private readonly pending: QueuedSteering<Result>[] = [];
     private processing = false;
 
     constructor(
-        private readonly handle: (params: SessionSteerRequest) => Promise<SessionSteeringResponse>,
+        private readonly handle: (params: SessionSteerRequest) => Promise<Result>,
     ) {}
 
-    enqueue(params: SessionSteerRequest): Promise<SessionSteeringResponse> {
-        return new Promise<SessionSteeringResponse>((resolve, reject) => {
+    enqueue(params: SessionSteerRequest): Promise<Result> {
+        return new Promise<Result>((resolve, reject) => {
             this.pending.push({params, resolve, reject});
             this.startConsumer();
         });

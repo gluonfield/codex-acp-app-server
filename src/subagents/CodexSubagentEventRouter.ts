@@ -1,3 +1,4 @@
+import {PromptTokenUsage, toTokenCount, usageUpdate} from "../TokenCount";
 import type {ServerNotification} from "../app-server";
 import type {ThreadItem} from "../app-server/v2";
 import {ACPSessionConnection, type UpdateSessionEvent} from "../ACPSessionConnection";
@@ -26,6 +27,7 @@ type PendingSubagent = {
     parentSessionId: string;
     task: string;
     buffered: ServerNotification[];
+    usage?: UpdateSessionEvent;
     droppedBufferedNotifications: number;
 };
 
@@ -39,6 +41,7 @@ export class CodexSubagentEventRouter {
     private static readonly DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
     private static readonly MAX_PENDING_NOTIFICATIONS = 256;
 
+    private readonly usageByThread = new Map<string, PromptTokenUsage>();
     private readonly children = new Map<string, NativeSubagent>();
     private readonly pendingSpawns = new Map<string, PendingSubagent>();
     private readonly terminalPendingSpawns = new Map<string, PendingSubagent>();
@@ -54,8 +57,14 @@ export class CodexSubagentEventRouter {
     ) {}
 
     async handle(notification: ServerNotification): Promise<boolean> {
-        if (notification.method === "turn/started") {
-            return this.isKnownChild(notification.params.threadId);
+        if (notification.method === "turn/started" && notification.params.threadId !== this.rootSessionId) {
+            const tracker = this.usageByThread.get(notification.params.threadId);
+            if (tracker?.id !== notification.params.turn.id) {
+                const next = new PromptTokenUsage();
+                next.start(notification.params.turn.id);
+                this.usageByThread.set(notification.params.threadId, next);
+            }
+            return true;
         }
         if (notification.method === "turn/completed") {
             const childTurn = this.isKnownChild(notification.params.threadId);
@@ -66,13 +75,31 @@ export class CodexSubagentEventRouter {
             }
             else {
                 if (this.pendingSpawns.has(notification.params.threadId)) {
-                    this.finishPending(notification.params.threadId);
+                    await this.finishPending(notification.params.threadId);
                 }
                 else {
                     await this.finish(notification.params.threadId, state);
                 }
             }
             return childTurn;
+        }
+        if (notification.method === "thread/tokenUsage/updated" && notification.params.threadId !== this.rootSessionId) {
+            const {threadId, turnId, tokenUsage} = notification.params;
+            const tracker = this.usageByThread.get(threadId);
+            if (tracker) {
+                const last = toTokenCount(tokenUsage.last);
+                tracker.record(turnId, last, toTokenCount(tokenUsage.total));
+                const update = usageUpdate(tracker, last, this.supported ? tokenUsage.modelContextWindow : null);
+                if (update) {
+                    const pending = this.pendingSpawns.get(threadId);
+                    if (pending) {
+                        pending.usage = update;
+                    } else {
+                        await this.session.update(update, this.notificationSessionId(notification));
+                    }
+                }
+            }
+            return true;
         }
         const notificationThreadId = (notification.params as {threadId?: unknown}).threadId;
         if (typeof notificationThreadId === "string" && this.pendingSpawns.has(notificationThreadId)) {
@@ -157,11 +184,11 @@ export class CodexSubagentEventRouter {
             const terminalState = state && terminalStateOf(state.status);
             if (!terminalState) continue;
             if (this.children.has(childSessionId)) await this.finish(childSessionId, terminalState);
-            else if (this.pendingSpawns.has(childSessionId)) this.finishPending(childSessionId);
+            else if (this.pendingSpawns.has(childSessionId)) await this.finishPending(childSessionId);
         }
         if (item.tool === "spawnAgent" && item.status === "failed") {
             for (const childSessionId of item.receiverThreadIds) {
-                if (this.pendingSpawns.has(childSessionId)) this.finishPending(childSessionId);
+                if (this.pendingSpawns.has(childSessionId)) await this.finishPending(childSessionId);
             }
         }
         // `updated` is intentionally not synthesized: the portable protocol
@@ -284,7 +311,7 @@ export class CodexSubagentEventRouter {
 
     async finishOutstanding(state: SubagentState): Promise<void> {
         for (const childSessionId of [...this.pendingSpawns.keys()]) {
-            this.finishPending(childSessionId);
+            await this.finishPending(childSessionId);
         }
         for (const childSessionId of [...this.children.keys()].reverse()) {
             await this.finish(childSessionId, state);
@@ -329,14 +356,21 @@ export class CodexSubagentEventRouter {
             path: normalizeAgentPath(path),
             generation: 1,
         });
+        if (pending?.usage) {
+            await this.session.update(pending.usage, childSessionId);
+        }
         this.pendingSpawns.delete(childSessionId);
         this.replayQueue.push(...(pending?.buffered ?? []));
         this.resolveMaterialization(childSessionId, childSessionId);
     }
 
-    private finishPending(childSessionId: string): void {
+    private async finishPending(childSessionId: string): Promise<void> {
         const pending = this.pendingSpawns.get(childSessionId);
         if (!pending) return;
+        if (pending.usage?._meta) {
+            await this.session.update({sessionUpdate: "session_info_update", _meta: pending.usage._meta});
+            delete pending.usage;
+        }
         this.pendingSpawns.delete(childSessionId);
         this.terminalPendingSpawns.set(childSessionId, pending);
         this.resolveMaterialization(childSessionId, null);

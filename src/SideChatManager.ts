@@ -6,7 +6,7 @@ import {CodexAcpClient} from "./CodexAcpClient";
 import type {SessionState} from "./CodexAcpServer";
 import {CodexTurn} from "./CodexTurn";
 import {scopedAcpConnection} from "./ScopedAcpConnection";
-import {toPromptUsage} from "./TokenCount";
+import {PromptTokenUsage, toPromptUsage} from "./TokenCount";
 import {logger} from "./Logger";
 import type {PromptCommand} from "./PromptCommand";
 
@@ -90,7 +90,7 @@ export class SideChatManager {
             throw error;
         }
         if (parentChats.closing) {
-            return this.cancelled(state);
+            return {stopReason: "cancelled"};
         }
         if (chat.active) {
             throw RequestError.invalidRequest(undefined, "Side chat is already running");
@@ -113,7 +113,11 @@ export class SideChatManager {
         };
         chat.active = active;
         try {
-            return await active.completion;
+            const response = await active.completion;
+            return {
+                ...response,
+                _meta: {usageId: state.promptTokenUsage.id, codex: {sideChat: scope}},
+            };
         } catch (error) {
             if (firstPrompt && parentChats.chats.get(scope.id) === chat) {
                 parentChats.chats.delete(scope.id);
@@ -159,6 +163,7 @@ export class SideChatManager {
             currentModelId: fork.currentModelId,
             currentTurnId: null,
             lastTokenUsage: null,
+            promptTokenUsage: new PromptTokenUsage(),
             totalTokenUsage: null,
             rateLimits: null,
             currentGoal: null,
@@ -176,6 +181,7 @@ export class SideChatManager {
         const state = prompt.state;
         state.currentTurnId = null;
         state.lastTokenUsage = null;
+        state.promptTokenUsage = new PromptTokenUsage();
         const connection = scopedAcpConnection(this.connection, parentSessionId, {
             codex: {
                 sideChat: {
@@ -214,7 +220,7 @@ export class SideChatManager {
             turn.throwIfFailed();
             return {
                 stopReason: "end_turn",
-                usage: state.lastTokenUsage === null ? null : toPromptUsage(state.lastTokenUsage),
+                usage: state.promptTokenUsage.usage === null ? null : toPromptUsage(state.promptTokenUsage.usage),
             };
         } finally {
             signal?.removeEventListener("abort", abort);
@@ -253,7 +259,7 @@ export class SideChatManager {
     private cancelled(state: SessionState): acp.PromptResponse {
         return {
             stopReason: "cancelled",
-            usage: state.lastTokenUsage === null ? null : toPromptUsage(state.lastTokenUsage),
+            usage: state.promptTokenUsage.usage === null ? null : toPromptUsage(state.promptTokenUsage.usage),
         };
     }
 }

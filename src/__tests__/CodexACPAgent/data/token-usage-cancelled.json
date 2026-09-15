@@ -8,23 +8,24 @@
     "thoughtTokens": 0
   },
   "_meta": {
+    "usageId": "turn-id",
     "quota": {
       "token_count": {
-        "totalTokens": 1500,
         "inputTokens": 1200,
         "cachedInputTokens": 0,
         "outputTokens": 300,
-        "reasoningOutputTokens": 0
+        "reasoningOutputTokens": 0,
+        "totalTokens": 1500
       },
       "model_usage": [
         {
           "model": "model-id",
           "token_count": {
-            "totalTokens": 1500,
             "inputTokens": 1200,
             "cachedInputTokens": 0,
             "outputTokens": 300,
-            "reasoningOutputTokens": 0
+            "reasoningOutputTokens": 0,
+            "totalTokens": 1500
           }
         }
       ]

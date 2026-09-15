@@ -2,6 +2,7 @@
   "stopReason": "end_turn",
   "usage": null,
   "_meta": {
+    "usageId": "turn-id",
     "quota": {
       "token_count": null,
       "model_usage": []

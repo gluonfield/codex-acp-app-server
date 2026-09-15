@@ -1,0 +1,192 @@
+[
+  {
+    "last": {
+      "inputTokens": 40866,
+      "cachedInputTokens": 11520,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 357,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 41223
+    },
+    "total": {
+      "inputTokens": 40866,
+      "cachedInputTokens": 11520,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 357,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 41223
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 46574,
+      "cachedInputTokens": 40704,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 182,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 46756
+    },
+    "total": {
+      "inputTokens": 87440,
+      "cachedInputTokens": 52224,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 539,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 87979
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 52395,
+      "cachedInputTokens": 46464,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 148,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 52543
+    },
+    "total": {
+      "inputTokens": 139835,
+      "cachedInputTokens": 98688,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 687,
+      "reasoningOutputTokens": 0,
+      "totalTokens": 140522
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 55421,
+      "cachedInputTokens": 52352,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 211,
+      "reasoningOutputTokens": 36,
+      "totalTokens": 55632
+    },
+    "total": {
+      "inputTokens": 195256,
+      "cachedInputTokens": 151040,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 898,
+      "reasoningOutputTokens": 36,
+      "totalTokens": 196154
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 57818,
+      "cachedInputTokens": 55296,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 671,
+      "reasoningOutputTokens": 28,
+      "totalTokens": 58489
+    },
+    "total": {
+      "inputTokens": 253074,
+      "cachedInputTokens": 206336,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 1569,
+      "reasoningOutputTokens": 64,
+      "totalTokens": 254643
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 59180,
+      "cachedInputTokens": 57728,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 647,
+      "reasoningOutputTokens": 442,
+      "totalTokens": 59827
+    },
+    "total": {
+      "inputTokens": 312254,
+      "cachedInputTokens": 264064,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 2216,
+      "reasoningOutputTokens": 506,
+      "totalTokens": 314470
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 63035,
+      "cachedInputTokens": 59136,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 917,
+      "reasoningOutputTokens": 113,
+      "totalTokens": 63952
+    },
+    "total": {
+      "inputTokens": 375289,
+      "cachedInputTokens": 323200,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 3133,
+      "reasoningOutputTokens": 619,
+      "totalTokens": 378422
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 64048,
+      "cachedInputTokens": 62976,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 194,
+      "reasoningOutputTokens": 25,
+      "totalTokens": 64242
+    },
+    "total": {
+      "inputTokens": 439337,
+      "cachedInputTokens": 386176,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 3327,
+      "reasoningOutputTokens": 644,
+      "totalTokens": 442664
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 69787,
+      "cachedInputTokens": 64000,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 136,
+      "reasoningOutputTokens": 40,
+      "totalTokens": 69923
+    },
+    "total": {
+      "inputTokens": 509124,
+      "cachedInputTokens": 450176,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 3463,
+      "reasoningOutputTokens": 684,
+      "totalTokens": 512587
+    },
+    "modelContextWindow": 258400
+  },
+  {
+    "last": {
+      "inputTokens": 70054,
+      "cachedInputTokens": 69248,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 248,
+      "reasoningOutputTokens": 193,
+      "totalTokens": 70302
+    },
+    "total": {
+      "inputTokens": 579178,
+      "cachedInputTokens": 519424,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 3711,
+      "reasoningOutputTokens": 877,
+      "totalTokens": 582889
+    },
+    "modelContextWindow": 258400
+  }
+]

@@ -6,7 +6,17 @@
       "update": {
         "sessionUpdate": "usage_update",
         "used": 2500,
-        "size": 128000
+        "size": 128000,
+        "_meta": {
+          "usageId": "turn-id",
+          "usage": {
+            "totalTokens": 2500,
+            "inputTokens": 1500,
+            "cachedReadTokens": 500,
+            "outputTokens": 450,
+            "thoughtTokens": 50
+          }
+        }
       }
     }
   ]

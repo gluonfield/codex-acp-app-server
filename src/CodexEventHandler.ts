@@ -39,7 +39,7 @@ import type {
     WarningNotification
 } from "./app-server/v2";
 import type { McpStartupCompleteEvent } from "./app-server/McpStartupCompleteEvent";
-import {toTokenCount} from "./TokenCount";
+import {usageUpdate, toTokenCount} from "./TokenCount";
 import {
     commandExecutionUsesTerminalOutput,
     createCommandExecutionUpdate,
@@ -477,6 +477,7 @@ export class CodexEventHandler {
             case "error":
                 return await this.createErrorEvent(notification.params);
             case "turn/started":
+                this.sessionState.promptTokenUsage.start(notification.params.turn.id);
                 this.sessionState.currentTurnId = notification.params.turn.id;
                 await this.flushPendingErrors();
                 return null;
@@ -1278,25 +1279,22 @@ export class CodexEventHandler {
     }
 
     private handleTokenUsageUpdated(params: ThreadTokenUsageUpdatedNotification): void {
-        this.sessionState.lastTokenUsage = toTokenCount(params.tokenUsage.last);
-        this.sessionState.totalTokenUsage = toTokenCount(params.tokenUsage.total);
+        const last = toTokenCount(params.tokenUsage.last);
+        const total = toTokenCount(params.tokenUsage.total);
+        this.sessionState.promptTokenUsage.record(params.turnId, last, total);
+        this.sessionState.lastTokenUsage = last;
+        this.sessionState.totalTokenUsage = total;
         this.sessionState.modelContextWindow = params.tokenUsage.modelContextWindow;
     }
 
     private createUsageUpdate(params: ThreadTokenUsageUpdatedNotification): UpdateSessionEvent | null {
         this.handleTokenUsageUpdated(params);
 
-        const used = this.sessionState.lastTokenUsage?.totalTokens;
-        const size = this.sessionState.modelContextWindow;
-        if (used == null || size == null || size <= 0) {
-            return null;
-        }
-
-        return {
-            sessionUpdate: "usage_update",
-            used,
-            size,
-        };
+        return usageUpdate(
+            this.sessionState.promptTokenUsage,
+            toTokenCount(params.tokenUsage.last),
+            params.tokenUsage.modelContextWindow,
+        );
     }
 
     private handleRateLimitsUpdated(params: AccountRateLimitsUpdatedNotification): void {

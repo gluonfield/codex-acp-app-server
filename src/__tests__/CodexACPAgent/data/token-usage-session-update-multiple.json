@@ -7,7 +7,17 @@
         "update": {
           "sessionUpdate": "usage_update",
           "used": 1000,
-          "size": 128000
+          "size": 128000,
+          "_meta": {
+            "usageId": "turn-id",
+            "usage": {
+              "totalTokens": 1000,
+              "inputTokens": 800,
+              "cachedReadTokens": 0,
+              "outputTokens": 200,
+              "thoughtTokens": 0
+            }
+          }
         }
       }
     ]
@@ -20,7 +30,17 @@
         "update": {
           "sessionUpdate": "usage_update",
           "used": 1000,
-          "size": 128000
+          "size": 128000,
+          "_meta": {
+            "usageId": "turn-id",
+            "usage": {
+              "totalTokens": 2000,
+              "inputTokens": 1600,
+              "cachedReadTokens": 0,
+              "outputTokens": 400,
+              "thoughtTokens": 0
+            }
+          }
         }
       }
     ]
@@ -33,7 +53,17 @@
         "update": {
           "sessionUpdate": "usage_update",
           "used": 1500,
-          "size": 128000
+          "size": 128000,
+          "_meta": {
+            "usageId": "turn-id",
+            "usage": {
+              "totalTokens": 3500,
+              "inputTokens": 2300,
+              "cachedReadTokens": 500,
+              "outputTokens": 600,
+              "thoughtTokens": 100
+            }
+          }
         }
       }
     ]

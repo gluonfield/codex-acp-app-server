@@ -89,9 +89,10 @@ export class CodexSubagentEventRouter {
             if (tracker) {
                 const last = toTokenCount(tokenUsage.last);
                 tracker.record(turnId, last, toTokenCount(tokenUsage.total));
-                const update = usageUpdate(tracker, last, this.supported ? tokenUsage.modelContextWindow : null);
+                const pending = this.pendingSpawns.get(threadId);
+                const contextWindow = pending || this.children.has(threadId) ? tokenUsage.modelContextWindow : null;
+                const update = usageUpdate(tracker, last, contextWindow);
                 if (update) {
-                    const pending = this.pendingSpawns.get(threadId);
                     if (pending) {
                         pending.usage = update;
                     } else {

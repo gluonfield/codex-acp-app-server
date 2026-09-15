@@ -57,5 +57,14 @@ it.each(['materialize', 'complete', 'cancel'])('preserves child usage through bu
     if (ending !== 'materialize') {
         expect(usage[0].update.sessionUpdate).toBe('session_info_update');
         expect(usage[0].update.used).toBeUndefined();
+        await router.handle({
+            method: 'thread/tokenUsage/updated',
+            params: {threadId: 'child', turnId: turn.id, tokenUsage: nativeUsage[1]!},
+        });
+        const late = notify.mock.calls.at(-1)![1];
+        expect(late.sessionId).toBe('parent');
+        expect(late.update._meta.usageId).toBe('child-turn');
+        expect(late.update.used).toBeUndefined();
+        expect(late.update.size).toBeUndefined();
     }
 });

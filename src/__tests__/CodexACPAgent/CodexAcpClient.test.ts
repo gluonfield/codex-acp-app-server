@@ -3552,6 +3552,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             data: [
                 {
                     name: "fs",
+                    httpOrigin: null,
                     runtimeStatus: null,
                     pluginId: null,
                     serverInfo: null,
@@ -3564,6 +3565,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 },
                 {
                     name: "browser",
+                    httpOrigin: null,
                     runtimeStatus: null,
                     pluginId: null,
                     serverInfo: null,

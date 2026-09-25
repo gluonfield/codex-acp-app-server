@@ -681,6 +681,7 @@ export class CodexEventHandler {
             case "thread/realtime/closed":
             case "windowsSandbox/setupCompleted":
             case "account/login/completed":
+            case "account/gatewayOAuth/changed":
             case "skills/changed":
             case "mcpServer/oauthLogin/completed":
             case "externalAgentConfig/import/completed":

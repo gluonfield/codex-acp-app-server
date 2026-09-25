@@ -110,6 +110,7 @@ export function modelFromJazMetadata(metadata: ExactJazModelMetadata): Model {
         additionalSpeedTiers: [],
         serviceTiers: [],
         defaultServiceTier: null,
+        availableAccessPrograms: null,
         isDefault: false,
     };
 }

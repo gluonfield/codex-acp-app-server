@@ -195,6 +195,22 @@
     {
       "sessionId": "session-1",
       "update": {
+        "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
+        "content": {
+          "type": "text",
+          "text": "image:file-saved-image"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
         "sessionUpdate": "agent_message_chunk",
         "messageId": "item-agent-1",
         "content": {
@@ -319,7 +335,17 @@
             "newText": "Hello\nWorld\n",
             "path": "/test/project/Added.txt",
             "_meta": {
-              "kind": "add"
+              "kind": "add",
+              "jetbrains": {
+                "air": {
+                  "version": 1,
+                  "diffStats": {
+                    "version": 1,
+                    "added": 2,
+                    "removed": 0
+                  }
+                }
+              }
             }
           }
         ]
@@ -365,7 +391,8 @@
           "arguments": {
             "includeDisabled": false
           }
-        }
+        },
+        "name": "list_apps"
       }
     }
   ]
@@ -379,6 +406,7 @@
         "sessionUpdate": "tool_call",
         "toolCallId": "item-image-view-1",
         "kind": "read",
+        "name": "view_image",
         "title": "View Image /test/project/input.png",
         "status": "completed",
         "content": [

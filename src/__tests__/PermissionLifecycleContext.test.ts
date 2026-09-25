@@ -27,6 +27,7 @@ function mcpStarted(id: string, turnId: string, threadId = "thread"): ServerNoti
                 status: "inProgress",
                 arguments: {},
                 appContext: null,
+                mcpAppUi: null,
                 readOnlyHint: null,
                 pluginId: null,
                 result: null,
@@ -49,6 +50,32 @@ function fileChangeStarted(id: string, threadId: string): ServerNotification {
                 id,
                 changes: [{path: `/${threadId}.txt`, kind: {type: "add"}, diff: "+content"}],
                 status: "inProgress",
+            },
+        },
+    };
+}
+
+function commandStarted(id: string, threadId: string): Extract<ServerNotification, {method: "item/started"}> {
+    return {
+        method: "item/started",
+        params: {
+            threadId,
+            turnId: `turn-${threadId}`,
+            startedAtMs: 0,
+            item: {
+                type: "commandExecution",
+                id,
+                pluginId: null,
+                scriptPath: null,
+                command: "npm test",
+                cwd: "/workspace",
+                processId: null,
+                source: "unifiedExecStartup",
+                status: "inProgress",
+                commandActions: [],
+                aggregatedOutput: null,
+                exitCode: null,
+                durationMs: null,
             },
         },
     };
@@ -123,6 +150,8 @@ describe("PermissionLifecycleContext", () => {
         prompt.handleNotification(mcpStarted("call-b", "turn-b", "child-b"));
         prompt.handleNotification(fileChangeStarted("shared-file-change", "child-a"));
         prompt.handleNotification(fileChangeStarted("shared-file-change", "child-b"));
+        prompt.handleNotification(commandStarted("shared-command", "child-a"));
+        prompt.handleNotification(commandStarted("shared-command", "child-b"));
 
         prompt.handleNotification(turnCompleted("child-b"));
 
@@ -130,6 +159,27 @@ describe("PermissionLifecycleContext", () => {
         expect(prompt.popPendingMcpApproval("child-b", "server")).toBeUndefined();
         expect(prompt.fileChange("child-a", "shared-file-change")?.changes[0]?.path).toBe("/child-a.txt");
         expect(prompt.fileChange("child-b", "shared-file-change")).toBeUndefined();
+        expect(prompt.commandName("child-a", "shared-command")).toBe("exec_command");
+        expect(prompt.commandName("child-b", "shared-command")).toBeUndefined();
+    });
+
+    it("clears a completed command's name", () => {
+        const prompt = new PermissionLifecycleContext(sessionState()).beginPrompt();
+        const notification = commandStarted("command", "thread");
+        prompt.handleNotification(notification);
+        expect(prompt.commandName("thread", "command")).toBe("exec_command");
+
+        prompt.handleNotification({
+            method: "item/completed",
+            params: {
+                threadId: notification.params.threadId,
+                turnId: notification.params.turnId,
+                completedAtMs: 1,
+                item: notification.params.item,
+            },
+        });
+
+        expect(prompt.commandName("thread", "command")).toBeUndefined();
     });
 
     it("does not allocate a synthetic ID for native ACP elicitation", async () => {

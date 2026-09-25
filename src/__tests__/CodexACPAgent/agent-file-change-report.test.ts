@@ -266,9 +266,8 @@ describe("agent file-change report lifecycle", () => {
     it("publishes cancelled when cancellation arrives after the provider turn completes", async () => {
         const {fixture, sessionState} = await setupMainPrompt();
         const cancellation = new AbortController();
-        sessionState.titleGen = {
-            onTurnCompleted: () => cancellation.abort(),
-        } as unknown as NonNullable<SessionState["titleGen"]>;
+        vi.spyOn(fixture.getCodexAcpAgent() as any, "publishFallbackSessionTitle")
+            .mockImplementation(async () => cancellation.abort());
 
         await expect(fixture.getCodexAcpAgent().prompt(
             promptWithFileChangeReport(sessionState.sessionId, "request-late-cancel"),

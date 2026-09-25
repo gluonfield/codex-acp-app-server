@@ -51,7 +51,7 @@ import {
     REASONING_EFFORT_CONFIG_ID,
 } from "./ModelConfigOption";
 import type {TokenCount} from "./TokenCount";
-import {toPromptUsage} from "./TokenCount";
+import {PromptTokenUsage, toPromptUsage} from "./TokenCount";
 import {CodexCommands, GOAL_CONTINUATION_PROMPT} from "./CodexCommands";
 import {SteeringQueue} from "./SteeringQueue";
 import type {QuotaMeta} from "./QuotaMeta";
@@ -124,7 +124,6 @@ import {
     sameAuthStatus,
 } from "./AuthStatusMeta";
 import {randomUUID} from "node:crypto";
-import {TitleGenerator} from "./TitleGenerator";
 import {once} from "node:events";
 import {
     sameThreadGoalSnapshot,
@@ -170,6 +169,7 @@ export interface SessionState {
     collaborationMode: ModeKind,
     currentTurnId: string | null;
     lastTokenUsage: TokenCount | null;
+    promptTokenUsage: PromptTokenUsage;
     totalTokenUsage: TokenCount | null;
     modelContextWindow: number | null;
     rateLimits: RateLimitsMap | null;
@@ -188,7 +188,6 @@ export interface SessionState {
     sessionTitle: string | null;
     sessionTitleSource: "unset" | "fallback" | "explicit" | "unknown";
     sessionFailure?: SessionFailure;
-    titleGen?: TitleGenerator;
     subagents: CodexSubagentEventRouter;
     asyncTasks: CodexBackgroundTerminalTasks;
 }
@@ -706,6 +705,7 @@ export class CodexAcpServer {
             collaborationMode: sessionMetadata.collaborationMode,
             currentTurnId: null,
             lastTokenUsage: null,
+            promptTokenUsage: new PromptTokenUsage(),
             totalTokenUsage: null,
             modelContextWindow: this.codexAcpClient.getModelContextWindow(
                 ModelId.fromString(currentModelId).model,
@@ -731,12 +731,6 @@ export class CodexAcpServer {
             ),
             asyncTasks: this.createAsyncTasks(sessionId),
         };
-        sessionState.titleGen = new TitleGenerator(
-            this.codexAcpClient.appServerClient,
-            sessionId,
-            sessionState.cwd,
-            () => sessionState.sessionTitleSource,
-        );
         this.installSessionState(sessionState);
         resumeSubscribed = false;
 
@@ -1990,6 +1984,7 @@ export class CodexAcpServer {
             collaborationMode: sessionMetadata.collaborationMode,
             currentTurnId: null,
             lastTokenUsage: null,
+            promptTokenUsage: new PromptTokenUsage(),
             totalTokenUsage: null,
             modelContextWindow: this.codexAcpClient.getModelContextWindow(
                 ModelId.fromString(currentModelId).model,
@@ -2015,12 +2010,6 @@ export class CodexAcpServer {
             ),
             asyncTasks: this.createAsyncTasks(sessionId),
         };
-        sessionState.titleGen = new TitleGenerator(
-            this.codexAcpClient.appServerClient,
-            sessionId,
-            sessionState.cwd,
-            () => sessionState.sessionTitleSource,
-        );
         this.installSessionState(sessionState);
         subscribed = false;
 
@@ -2196,7 +2185,6 @@ export class CodexAcpServer {
         if (explicitTitle) {
             sessionState.sessionTitle = explicitTitle;
             sessionState.sessionTitleSource = "explicit";
-            sessionState.titleGen?.markExistingTitle();
             await session.update({
                 sessionUpdate: "session_info_update",
                 title: explicitTitle,
@@ -2811,7 +2799,7 @@ export class CodexAcpServer {
         });
         const sessionState = this.getSessionState(params.sessionId);
         if (this.sessionIsClosing(params.sessionId)) {
-            return this.cancelledPromptResponse(sessionState);
+            return {stopReason: "cancelled"};
         }
         const promptCommand = parsePromptCommand(params.prompt);
         const sideChat = parseSideChatPrompt(params, promptCommand);
@@ -2843,6 +2831,7 @@ export class CodexAcpServer {
         let promptWasCancelled = false;
         let recoverableSessionFailure = sessionState.sessionFailure;
         sessionState.currentTurnId = null;
+        sessionState.promptTokenUsage = new PromptTokenUsage();
         let pendingTurnStart: PendingTurnStart | null = null;
         const ensurePendingTurnStart = (): PendingTurnStart => {
             if (pendingTurnStart === null) {
@@ -3001,7 +2990,7 @@ export class CodexAcpServer {
                 await clearRecoveredSessionFailure(eventHandler);
                 return {
                     stopReason: "end_turn",
-                    usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+                    usage: this.buildPromptUsage(sessionState.promptTokenUsage.usage),
                     _meta: this.buildQuotaMeta(sessionState),
                 };
             }
@@ -3217,19 +3206,6 @@ export class CodexAcpServer {
 
             await clearRecoveredSessionFailure(eventHandler);
 
-            // Fire-and-forget: generate an AI title from the first turn.
-            // Never await — must not block the prompt response.
-            // Note: turn.items contains only agent output, not the user message —
-            // extract prompt text from params instead.
-            if (sessionState.titleGen) {
-                const promptText = params.prompt
-                    .filter((b): b is Extract<acp.ContentBlock, { type: "text" }> => b.type === "text")
-                    .map(b => b.text)
-                    .join(" ")
-                    .trim();
-                sessionState.titleGen.onTurnCompleted(promptText);
-            }
-
             await this.publishFallbackSessionTitle(
                 sessionState,
                 this.createPromptFallbackTitle(params.prompt),
@@ -3237,7 +3213,7 @@ export class CodexAcpServer {
 
             return {
                 stopReason: "end_turn",
-                usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+                usage: this.buildPromptUsage(sessionState.promptTokenUsage.usage),
                 _meta: this.buildQuotaMeta(sessionState),
             };
         } catch (err) {
@@ -3337,7 +3313,7 @@ export class CodexAcpServer {
     private cancelledPromptResponse(sessionState: SessionState): acp.PromptResponse {
         return {
             stopReason: "cancelled",
-            usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+            usage: this.buildPromptUsage(sessionState.promptTokenUsage.usage),
             _meta: this.buildQuotaMeta(sessionState),
         };
     }
@@ -3354,15 +3330,15 @@ export class CodexAcpServer {
         }
         return {
             stopReason: "end_turn",
-            usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+            usage: this.buildPromptUsage(sessionState.promptTokenUsage.usage),
             _meta: {
                 ...this.buildQuotaMeta(sessionState),
                 ...failureMeta,
             },
         };
     }
-    private buildQuotaMeta(sessionState: SessionState): { quota: QuotaMeta } {
-        const lastTokenUsage = sessionState.lastTokenUsage;
+    private buildQuotaMeta(sessionState: SessionState): { quota: QuotaMeta; usageId: string | null } {
+        const lastTokenUsage = sessionState.promptTokenUsage.usage;
 
         // Remove the "[reasoning-level]" suffix from currentModelId if present
         const modelName = sessionState.currentModelId.replace(/\[.*?]$/, '');
@@ -3373,8 +3349,9 @@ export class CodexAcpServer {
             : [];
 
         return {
+            usageId: sessionState.promptTokenUsage.id,
             quota: {
-                token_count: sessionState.lastTokenUsage,
+                token_count: lastTokenUsage,
                 model_usage: modelUsage
             }
         };

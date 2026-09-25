@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ServerNotification } from '../../app-server';
 import { createCodexMockTestFixture, createTestSessionState, type CodexMockTestFixture } from '../acp-test-utils';
 import type { TokenUsageBreakdown } from '../../app-server/v2';
+import nativeUsage from './data/native-token-usage-20260910.json';
+import {toTokenCount} from '../../TokenCount';
+import {CodexEventHandler} from '../../CodexEventHandler';
 
 function createTokenUsageNotification(
     sessionId: string,
@@ -40,6 +43,10 @@ describe('Token Usage Events', () => {
             // awaitTurnCompleted sends notifications before resolving
             mockFixture.getCodexAppServerClient().awaitTurnCompleted = vi.fn().mockImplementation(async () => {
                 // Send notifications during turn (after handler is registered)
+                mockFixture.sendServerNotification({
+                    method: "turn/started",
+                    params: {threadId: sessionId, turn: {id: "turn-id", items: [], status: "inProgress", error: null}},
+                });
                 for (const notification of notifications) {
                     mockFixture.sendServerNotification(notification);
                 }
@@ -53,6 +60,39 @@ describe('Token Usage Events', () => {
 
             return codexAcpAgent;
         }
+
+        it('counts every call in a native Codex 0.153.4 trace and ignores replayed notifications', async () => {
+            const notifications = nativeUsage.flatMap(usage => {
+                const event = createTokenUsageNotification(sessionId, usage);
+                return [event, event];
+            });
+            const agent = setupPromptWithTokenUsage(notifications);
+            const response = await agent.prompt({sessionId, prompt: [{type: 'text', text: 'test prompt'}]});
+            expect(response.usage).toEqual({
+                inputTokens: 59_754,
+                cachedReadTokens: 519_424,
+                outputTokens: 3_711,
+                thoughtTokens: 877,
+                totalTokens: 582_889,
+            });
+            const updates = mockFixture.getAcpConnectionEvents([]).map(event => event.args[0].update);
+            expect(updates[0]._meta.usage.totalTokens).toBe(41_223);
+            expect(updates.at(-1)._meta.usage).toEqual(response.usage);
+            expect(updates.at(-1).used).toBe(70_302);
+        });
+
+        it('does not replay the previous prompt usage when cancelled before a new turn starts', async () => {
+            const agent = setupPromptWithTokenUsage([]);
+            const state = agent.getSessionState(sessionId);
+            const usage = toTokenCount(nativeUsage[0]!.last);
+            state.promptTokenUsage.start('previous');
+            state.promptTokenUsage.record('previous', usage, usage);
+            const controller = new AbortController();
+            controller.abort();
+            const response = await agent.prompt({sessionId, prompt: [{type: 'text', text: 'test prompt'}]}, controller.signal);
+            expect(response.stopReason).toBe('cancelled');
+            expect(response.usage).toBeNull();
+        });
 
         it('should include token_count in PromptResponse on end_turn', async () => {
             const tokenUsageNotification = createTokenUsageNotification(sessionId, {
@@ -133,7 +173,7 @@ describe('Token Usage Events', () => {
             );
         });
 
-        it('should use last token usage from multiple updates', async () => {
+        it('counts every model call in the prompt response', async () => {
             const notifications: ServerNotification[] = [
                 createTokenUsageNotification(sessionId, {
                     total: { totalTokens: 1000, inputTokens: 800, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 200, reasoningOutputTokens: 0 },
@@ -174,6 +214,10 @@ describe('Token Usage Events', () => {
             });
 
             mockFixture.getCodexAppServerClient().awaitTurnCompleted = vi.fn().mockImplementation(async () => {
+                mockFixture.sendServerNotification({
+                    method: "turn/started",
+                    params: {threadId: sessionId, turn: {id: "turn-id", items: [], status: "inProgress", error: null}},
+                });
                 for (const notification of notifications) {
                     mockFixture.sendServerNotification(notification);
                 }
@@ -242,7 +286,7 @@ describe('Token Usage Events', () => {
             await expect(`${JSON.stringify(events, null, 2)}\n`).toMatchFileSnapshot('data/token-usage-session-update-multiple.json');
         });
 
-        it('should skip usage_update when model context window is unavailable', async () => {
+        it('should report usage while the context window remains unknown', async () => {
             const events = await setupPromptAndReturnEvents([
                 createTokenUsageNotification(sessionId, {
                     total: { totalTokens: 5000, inputTokens: 4000, cachedInputTokens: 1000, cacheWriteInputTokens: 0, outputTokens: 900, reasoningOutputTokens: 100 },
@@ -251,7 +295,35 @@ describe('Token Usage Events', () => {
                 }),
             ])();
 
-            expect(events).toEqual([]);
+            expect(events).toHaveLength(1);
+            expect(events[0]?.args[0].update).toEqual({
+                sessionUpdate: "session_info_update",
+                _meta: {usageId: "turn-id", usage: {inputTokens: 1500, cachedReadTokens: 500, outputTokens: 450, thoughtTokens: 50, totalTokens: 2500}},
+            });
         });
     });
+});
+
+it('accounts for native child calls separately from the parent context and prompt', async () => {
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const state = createTestSessionState({sessionId: 'parent'});
+    const handler = new CodexEventHandler({notify, request: vi.fn()}, state);
+    const first = nativeUsage[0]!;
+    await handler.handleNotification({
+        method: 'turn/started',
+        params: {threadId: 'child', turn: {id: 'turn-id', status: 'inProgress', items: [], error: null, itemsView: 'full', startedAt: null, completedAt: null, durationMs: null}},
+    });
+    const event = createTokenUsageNotification('child', first);
+    await handler.handleNotification(event);
+    await handler.handleNotification(event);
+    expect(state.promptTokenUsage.usage).toBeNull();
+    expect(state.lastTokenUsage).toBeNull();
+    expect(notify.mock.calls[0]![1]).toMatchObject({
+        sessionId: 'parent',
+        update: {
+            sessionUpdate: 'session_info_update',
+            _meta: {usageId: 'turn-id', usage: {totalTokens: first.last.totalTokens}},
+        },
+    });
+    expect(notify.mock.calls[1]![1]).toEqual(notify.mock.calls[0]![1]);
 });

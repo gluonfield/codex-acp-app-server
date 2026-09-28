@@ -56,6 +56,7 @@ The adapter advertises ACP auth methods during initialization. Clients can authe
 - `OPENAI_API_KEY` - fallback API key used when the API-key auth method is selected.
 - `CODEX_PATH` - run a specific Codex executable instead of the bundled package dependency.
 - `CODEX_CONFIG` - JSON object merged into the Codex session config, including `model_provider`.
+  It also accepts `@/absolute/path/config.json` to read the same JSON object from a UTF-8 file. Use this form for large developer instructions to avoid OS argument/environment size limits. File read and JSON parse errors stop startup. Keep the file private and available until the adapter has started; its contents are not copied back into the environment.
 - `DEFAULT_AUTH_REQUEST` - ACP auth request JSON used when Codex requires authentication.
 - `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `agent`, or `agent-full-access`.
 - `NO_BROWSER` - hide browser-based ChatGPT auth when set.

@@ -18,7 +18,7 @@ import {
     SESSION_STEERING_METHOD,
 } from "./AcpExtensions";
 import {readJazModelMetadata, resolveJazModelMetadata} from "./JazModelMetadata";
-import type {JsonObject} from "./JsonObject";
+import {readCodexConfig} from "./CodexConfig";
 import {ASYNC_TASK_STOP_METHOD} from "./async-tasks/AsyncTaskExtension";
 
 const emptyExtensionParamsParser = z.preprocess(
@@ -81,10 +81,9 @@ if (process.argv[2] === "login") {
 
 function startAcpServer() {
     const codexPath = process.env["CODEX_PATH"];
-    const configString = process.env["CODEX_CONFIG"];
     const authRequestString = process.env["DEFAULT_AUTH_REQUEST"];
     const environmentProvider = process.env["MODEL_PROVIDER"];
-    const config: JsonObject = configString ? JSON.parse(configString) : {};
+    const config = readCodexConfig(process.env["CODEX_CONFIG"]);
     const configuredProvider = config["model_provider"];
     const modelProvider = environmentProvider
         ?? (typeof configuredProvider === "string" ? configuredProvider : undefined);

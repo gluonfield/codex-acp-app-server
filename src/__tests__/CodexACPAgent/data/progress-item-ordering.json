@@ -26,8 +26,6 @@
         "title": "Web search: ACP message identity",
         "status": "in_progress",
         "rawInput": {
-          "type": "webSearch",
-          "id": "search-tool",
           "query": "ACP message identity",
           "action": {
             "type": "search",

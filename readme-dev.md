@@ -9,7 +9,7 @@ Set `CODEX_PATH` to run a different Codex binary; versions other than the one sp
 - `CODEX_CONFIG` - JSON object merged into the Codex session config.
 - `CODEX_CONFIG.model_provider` - model provider to pass to Codex for new sessions.
 - `DEFAULT_AUTH_REQUEST` - ACP auth request JSON used when Codex requires authentication.
-- `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `agent`, or `agent-full-access`.
+- `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `workspace-write`, `agent`, or `agent-full-access`.
 - `NO_BROWSER` - hide browser-based ChatGPT auth when set.
 - `APP_SERVER_LOGS` - directory for adapter logs.
 - `CODEX_ACP_MCP_REFRESH=1` - advertise `_session/mcp/refresh` for a separately verified native runtime that reconnects unchanged MCP servers on `config/mcpServer/reload`. Leave unset with bundled Codex 0.154.0: it acknowledges reload but retains the old catalog. The native operation refreshes every loaded thread and configured server.
@@ -104,7 +104,3 @@ Command replies, review results, and terminal/retrying errors retain their exist
 failure channels. Clients advertising session compaction support continue to receive the dedicated
 compaction lifecycle instead of the legacy completion advisory.
 
-### AIR diff statistics
-
-See the [diff statistics specification](docs/diff-statistics-extension.md) for the
-`_meta.jetbrains.air.diffStats` payload and its compatibility rules.

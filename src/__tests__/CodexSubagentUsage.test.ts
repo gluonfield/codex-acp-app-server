@@ -6,7 +6,7 @@ import nativeUsage from './CodexACPAgent/data/native-token-usage-20260910.json';
 
 it.each(['materialize', 'complete', 'cancel'])('preserves child usage through buffered output and %s', async ending => {
     const notify = vi.fn().mockResolvedValue(undefined);
-    const router = new CodexSubagentEventRouter('parent', true, new ACPSessionConnection({notify, request: vi.fn()}, 'parent'));
+    const router = new CodexSubagentEventRouter('parent', true, new ACPSessionConnection({notify, request: vi.fn()}, 'parent'), () => {});
     const turn: Turn = {
         id: 'child-turn', items: [], itemsView: 'full', status: 'inProgress', error: null,
         startedAt: null, completedAt: null, durationMs: null,

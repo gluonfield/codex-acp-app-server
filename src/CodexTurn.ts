@@ -1,5 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk";
-import type {AcpClientConnection} from "./ACPSessionConnection";
+import {randomUUID} from "node:crypto";
+import {ACPSessionConnection, type AcpClientConnection} from "./ACPSessionConnection";
 import {CodexAcpClient} from "./CodexAcpClient";
 import {CodexApprovalHandler} from "./permissions/CodexApprovalHandler";
 import {CodexElicitationHandler} from "./CodexElicitationHandler";
@@ -10,8 +11,9 @@ import type {TurnCompletedNotification} from "./app-server/v2";
 import {resolveFastServiceTier} from "./FastModeConfig";
 import {logger} from "./Logger";
 import {ModelId} from "./ModelId";
-import {clientSupportsPlanUpdates} from "./PlanCapabilities";
 import {PermissionLifecycleContext} from "./permissions/lifecycle";
+import {CodexSubagentEventRouter} from "./subagents/CodexSubagentEventRouter";
+import {AcpToolCallRenderer} from "./tool-calls/AcpToolCallRenderer";
 
 export class CodexTurn {
     private constructor(
@@ -32,15 +34,28 @@ export class CodexTurn {
         const events = new CodexEventHandler(
             connection,
             state,
-            clientSupportsPlanUpdates(clientCapabilities),
+            false,
+            randomUUID(),
+            new CodexSubagentEventRouter(
+                state.sessionId,
+                false,
+                new ACPSessionConnection(connection, state.sessionId),
+                () => {},
+            ),
+            undefined,
+            false,
+            false,
+            false,
         );
         const permissionContext = new PermissionLifecycleContext(state).beginPrompt();
-        const approvals = new CodexApprovalHandler(connection, permissionContext, signal);
+        const renderer = new AcpToolCallRenderer(state.clientCapabilities);
+        const approvals = new CodexApprovalHandler(connection, permissionContext, signal, renderer);
         const elicitations = new CodexElicitationHandler(
             connection,
             permissionContext,
             clientCapabilities,
             signal,
+            renderer,
         );
         const observeInteraction = async (event: ServerNotification) => {
             permissionContext.handleNotification(event);

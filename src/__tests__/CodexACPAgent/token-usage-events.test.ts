@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ServerNotification } from '../../app-server';
-import { createCodexMockTestFixture, createTestSessionState, type CodexMockTestFixture } from '../acp-test-utils';
+import { createCodexMockTestFixture, createTestEventHandler, createTestSessionState, type CodexMockTestFixture } from '../acp-test-utils';
 import type { TokenUsageBreakdown } from '../../app-server/v2';
 import nativeUsage from './data/native-token-usage-20260910.json';
 import {toTokenCount} from '../../TokenCount';
-import {CodexEventHandler} from '../../CodexEventHandler';
+import {ACPSessionConnection} from '../../ACPSessionConnection';
+import {CodexSubagentEventRouter} from '../../subagents/CodexSubagentEventRouter';
 
 function createTokenUsageNotification(
     sessionId: string,
@@ -306,8 +307,10 @@ describe('Token Usage Events', () => {
 
 it('accounts for native child calls separately from the parent context and prompt', async () => {
     const notify = vi.fn().mockResolvedValue(undefined);
+    const connection = {notify, request: vi.fn()};
     const state = createTestSessionState({sessionId: 'parent'});
-    const handler = new CodexEventHandler({notify, request: vi.fn()}, state);
+    state.subagents = new CodexSubagentEventRouter('parent', false, new ACPSessionConnection(connection, 'parent'), () => {});
+    const handler = createTestEventHandler(connection, state);
     const first = nativeUsage[0]!;
     await handler.handleNotification({
         method: 'turn/started',

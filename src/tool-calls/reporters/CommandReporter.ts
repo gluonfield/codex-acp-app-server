@@ -31,8 +31,8 @@ export class CommandReporter {
     private readonly nonTerminalCommands = new Set<string>();
     /** Started commands that show a terminal. */
     private readonly terminalCommands = new Set<string>();
-    /** Terminal commands that already streamed output. */
-    private readonly streamedCommands = new Set<string>();
+    /** Terminal commands that already streamed output, with the length they streamed. */
+    private readonly streamedCommands = new Map<string, number>();
     /** Commands that already sent output or stdin chunks to a client that is not AIR. */
     private readonly standardStreamedCommands = new Set<string>();
 
@@ -54,7 +54,7 @@ export class CommandReporter {
         if (delta.length > 0) this.standardStreamedCommands.add(itemId);
         const standard = {commandOutput: {data: delta, terminal: this.terminalCommands.has(itemId)}};
         if (this.nonTerminalCommands.has(itemId)) return {toolCallId: itemId, report: "update", standard};
-        if (delta.length > 0) this.streamedCommands.add(itemId);
+        if (delta.length > 0) this.streamedCommands.set(itemId, (this.streamedCommands.get(itemId) ?? 0) + delta.length);
         return {toolCallId: itemId, report: "update", terminalOutput: delta, standard};
     }
 
@@ -72,7 +72,8 @@ export class CommandReporter {
     /** Pass `withName` when the completion can be the first report of the tool call. */
     completed(item: CommandItem, withName = false): ToolFacts {
         this.nonTerminalCommands.delete(item.id);
-        const streamed = this.streamedCommands.delete(item.id);
+        const streamed = this.streamedCommands.get(item.id);
+        this.streamedCommands.delete(item.id);
         const facts = completionFacts(item, streamed, withName);
         return {
             ...facts,
@@ -142,7 +143,7 @@ export class CommandReporter {
         const start = startFacts(item);
         if (item.status === "inProgress") return [start];
         return [start, {
-            ...completionFacts(item, false, false),
+            ...completionFacts(item, undefined, false),
             standard: {
                 content: null,
                 commandEnd: {
@@ -204,7 +205,7 @@ function commandActionFacts(
  */
 function completionFacts(
     item: CommandItem,
-    streamed: boolean,
+    streamed: number | undefined,
     withName: boolean,
 ): ToolFacts {
     const name = withName ? commandToolName(item.source) : undefined;
@@ -221,7 +222,9 @@ function completionFacts(
     }
     return {
         ...facts,
-        ...(!streamed && output.length > 0 ? {terminalOutput: output} : {}),
+        ...(streamed === undefined && output.length > 0 ? {terminalOutput: output} : {}),
+        // Codex streams no output from a command's startup window, so the chunks can miss the start of the output.
+        ...(streamed !== undefined && output.length > streamed ? {opaqueResult: output} : {}),
         terminalExit: {exitCode: item.exitCode},
     };
 }

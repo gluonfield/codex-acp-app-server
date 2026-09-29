@@ -55,6 +55,22 @@ describe("command output is sent once", () => {
         });
     });
 
+    it("sends the whole output in rawOutput when the chunks missed the startup output", () => {
+        const renderer = new AcpToolCallRenderer(DELTA_CLIENT);
+        const reporter = new CommandReporter();
+        renderer.render(reporter.started(command({status: "inProgress", aggregatedOutput: null, exitCode: null})));
+        renderer.render(reporter.outputDelta("cmd-1", "tick-4\n")!);
+        const end = renderer.render(reporter.completed(command({aggregatedOutput: "line-1\ntick-4\n"})));
+
+        expect(end).toEqual({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "cmd-1",
+            status: "completed",
+            rawOutput: "line-1\ntick-4\n",
+            _meta: {terminal_exit: {exit_code: 0, signal: null, terminal_id: "cmd-1"}},
+        });
+    });
+
     it("keeps the Zed terminal conventions for a client without output deltas", () => {
         const renderer = new AcpToolCallRenderer(ZED_CLIENT);
         const reporter = new CommandReporter();

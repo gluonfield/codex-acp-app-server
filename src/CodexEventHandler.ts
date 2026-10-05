@@ -64,6 +64,7 @@ import type {SubagentState} from "./subagents/AcpSubagents";
 import {mergeRateLimitSnapshot} from "./RateLimitsMap";
 import {AGENT_FILE_CHANGE_REPORT_MAX_DIFF_BYTES} from "./AgentFileChangeReport";
 import {createSessionNotice} from "./SessionNotice";
+import {readableServiceErrorMessage} from "./ServiceErrorMessage";
 
 export { stripShellPrefix };
 
@@ -161,7 +162,7 @@ const STRING_CODEX_ERROR_CATEGORIES = {
     serverOverloaded: "overloaded",
     cyberPolicy: "policy_denied",
     misalignmentPolicyViolation: "policy_denied",
-    tooManyDenials: "policy_denied",
+    tooManyDenials: "provider_error",
     internalServerError: "internal_error",
     unauthorized: "auth_required",
     badRequest: "bad_request",
@@ -974,7 +975,7 @@ export class CodexEventHandler {
                 this.createTurnErrorData(params.error),
             );
         }
-        return createAgentTextMessageChunk(`${params.error.message}\n\n`);
+        return createAgentTextMessageChunk(`${readableServiceErrorMessage(params.error.message)}\n\n`);
     }
 
     private recordTypedSessionFailure(params: ErrorNotification): void {
@@ -1000,7 +1001,7 @@ export class CodexEventHandler {
             revision: nextSessionFailureRevision(previous, id),
             category: policy.category,
             severity,
-            title,
+            title: readableServiceErrorMessage(title),
             actions: actionsOverride ?? policy.actions,
         };
         this.failuresById.set(id, failure);

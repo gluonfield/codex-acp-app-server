@@ -2,6 +2,7 @@ import { MCP_REFRESH_METHOD, parseMcpRefreshRequest } from "./mcp-refresh";
 import * as acp from "@agentclientprotocol/sdk";
 import {RequestError, type SessionId, type SessionModeState} from "@agentclientprotocol/sdk";
 import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
+import {attachmentFileUri, desktopAttachmentHistory} from "./DesktopAttachmentHistory";
 import {CodexApprovalHandler} from "./permissions/CodexApprovalHandler";
 import {PermissionLifecycleContext} from "./permissions/lifecycle";
 import {CodexElicitationHandler} from "./CodexElicitationHandler";
@@ -2407,8 +2408,17 @@ export class CodexAcpServer {
     private createUserMessageUpdates(item: ThreadItem & { type: "userMessage" }): UpdateSessionEvent[] {
         const updates: UpdateSessionEvent[] = [];
         const messageId = item.id;
-        for (const input of item.content) {
-            const blocks = this.userInputToContentBlocks(input);
+        const contentBlocks = item.content.map(input => this.userInputToContentBlocks(input));
+        const attachmentUris = new Set(contentBlocks.flatMap((blocks, index) =>
+            item.content[index]?.type === "text"
+                ? blocks.flatMap(block => block.type === "resource_link" ? [block.uri] : [])
+                : []));
+        for (const [index, input] of item.content.entries()) {
+            const nativePath = input.type === "localImage" || input.type === "localAudio" || input.type === "mention"
+                ? input.path
+                : (input.type === "image" || input.type === "audio") && "url" in input ? input.url : null;
+            if (nativePath !== null && attachmentUris.has(attachmentFileUri(nativePath) ?? "")) continue;
+            const blocks = contentBlocks[index]!;
             for (const block of blocks) {
                 updates.push(createUserMessageChunk(block, messageId));
             }
@@ -2459,7 +2469,8 @@ export class CodexAcpServer {
     private userInputToContentBlocks(input: UserInput): acp.ContentBlock[] {
         switch (input.type) {
             case "text":
-                return input.text.length > 0 ? [{ type: "text", text: input.text }] : [];
+                return desktopAttachmentHistory(input.text)
+                    ?? (input.text.length > 0 ? [{ type: "text", text: input.text }] : []);
             case "image":
                 return [{
                     type: "text",
@@ -2467,17 +2478,20 @@ export class CodexAcpServer {
                         ? this.formatUriAsLink("image", input.url)
                         : `image:${input.fileId}`,
                 }];
-            case "localImage": {
-                const uri = input.path.startsWith("file://") ? input.path : `file://${input.path}`;
-                return [{ type: "text", text: this.formatUriAsLink(null, uri) }];
+            case "localImage":
+            case "localAudio":
+            case "mention": {
+                const uri = attachmentFileUri(input.path);
+                const fileName = input.path.split(/[\\/]/).pop() || input.type;
+                const name = input.type === "mention" && input.name.trim().length > 0 ? input.name : fileName;
+                return uri !== null
+                    ? [{type: "resource_link", name, uri}]
+                    : [{type: "text", text: this.formatUriAsLink(name, input.path)}];
             }
             case "skill":
                 return [{ type: "text", text: `skill:${input.name} (${input.path})` }];
             case "audio":
-            case "localAudio":
-            case "mention":
-                // These inputs are not currently represented in ACP history replay.
-                return [];
+                return [{type: "text", text: this.formatUriAsLink("audio", input.url)}];
         }
     }
 

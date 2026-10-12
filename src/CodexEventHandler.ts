@@ -9,6 +9,7 @@ import type {
 } from "./CodexAcpServer";
 import {type PlanEntry, RequestError} from "@agentclientprotocol/sdk";
 import {ACPSessionConnection, type AcpClientConnection, type UpdateSessionEvent} from "./ACPSessionConnection";
+import {normalizeSessionTitle} from "./SessionTitle";
 import type {
     AccountRateLimitsUpdatedNotification,
     AccountUpdatedNotification,
@@ -64,6 +65,7 @@ import type {SubagentState} from "./subagents/AcpSubagents";
 import {mergeRateLimitSnapshot} from "./RateLimitsMap";
 import {AGENT_FILE_CHANGE_REPORT_MAX_DIFF_BYTES} from "./AgentFileChangeReport";
 import {createSessionNotice} from "./SessionNotice";
+import {isStaleAutomaticTitleEcho} from "./SessionIndexTitles";
 import {readableServiceErrorMessage} from "./ServiceErrorMessage";
 
 export { stripShellPrefix };
@@ -529,13 +531,16 @@ export class CodexEventHandler {
             case "thread/tokenUsage/updated":
                 return this.createUsageUpdate(notification.params);
             case "thread/name/updated":
-                this.sessionState.sessionTitle = notification.params.threadName ?? null;
+                if (isStaleAutomaticTitleEcho(this.sessionState, normalizeSessionTitle(notification.params.threadName))) {
+                    return null;
+                }
+                this.sessionState.sessionTitle = normalizeSessionTitle(notification.params.threadName);
                 this.sessionState.sessionTitleSource = notification.params.threadName == null
                     ? "unset"
                     : "explicit";
                 return {
                     sessionUpdate: "session_info_update",
-                    title: notification.params.threadName ?? null,
+                    title: this.sessionState.sessionTitle,
                 };
             case "thread/status/changed":
                 return this.createCodexSessionInfoUpdate({

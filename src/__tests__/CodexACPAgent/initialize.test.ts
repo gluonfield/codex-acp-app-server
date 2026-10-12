@@ -94,7 +94,7 @@ describe('CodexACPAgent - initialize', () => {
                         controlMethod: "_session/goal",
                         actions: ["set", "pause", "resume", "clear"],
                     },
-                    capabilities: ["sessionFailure", "diffPatch", "agentFileChangeReport", "nativeSubagentSessions", "asyncTasks", "recommendedValue", "rawInputRendering", "planContentDelta"],
+                    capabilities: ["sessionFailure", "diffPatch", "agentFileChangeReport", "customInstructions", "nativeSubagentSessions", "asyncTasks", "recommendedValue", "rawInputRendering", "planContentDelta", "codexHooks"],
                 },
             },
         });
@@ -164,7 +164,7 @@ describe('CodexACPAgent - initialize', () => {
 
         expect(result.authMethods).toEqual([]);
         expect(result.agentCapabilities?.auth).toBeUndefined();
-        await expect(client.authRequired()).resolves.toBe(false);
+        await expect(client.readAuthRequirement()).resolves.toEqual({required: false, account: null});
         expect(mocks.mockCodexConnection.sendRequest).not.toHaveBeenCalledWith(
             "account/read",
             expect.anything(),
@@ -209,5 +209,21 @@ describe('CodexACPAgent - initialize', () => {
             expect.objectContaining({id: "custom"}),
         ]);
         expect(listModels).toHaveBeenCalledOnce();
+    });
+
+    it('keeps exact custom-provider metadata for a restarted app-server', () => {
+        const client = new CodexAcpClient(new CodexAppServerClient(createMockConnections().mockCodexConnection), {model_provider: "openrouter"}, undefined, {
+            id: "custom",
+            displayName: "Custom",
+            description: null,
+            contextWindow: 128_000,
+            inputModalities: ["text"],
+            reasoningEfforts: [],
+            defaultReasoningEffort: null,
+        });
+
+        const restarted = client.withAppServer(new CodexAppServerClient(createMockConnections().mockCodexConnection));
+
+        expect(restarted.getModelContextWindow("custom")).toBe(128_000);
     });
 });

@@ -11,6 +11,7 @@ import {
     lines,
     mergedReports,
     metaObjects,
+    withFeatureChanges,
     withoutForkAdditions,
     withOutputOnce,
 } from "./baseline";
@@ -118,6 +119,24 @@ describe("clients that are not AIR, compared with the baseline", () => {
         });
         expect(lines(mergedReports([started, request({})])))
             .not.toEqual(lines(mergedReports([started, request({kind: "execute"})])));
+    });
+
+    it("changes only the baseline /mcp command in the available commands", () => {
+        const commands = (availableCommands: unknown[]): RecordedMessage => ({
+            direction: "notify",
+            method: "session/update",
+            params: {sessionId: "s", update: {sessionUpdate: "available_commands_update", availableCommands}},
+        });
+        const status = {name: "status", description: "Display session configuration and token usage.", input: null};
+        const baselineMcp = {name: "mcp", description: "List configured Model Context Protocol (MCP) tools.", input: null};
+        const otherMcp = {name: "mcp", description: "Another description.", input: null};
+        const mcp = {
+            name: "mcp",
+            description: "Show the status of the MCP servers, or reconnect them.",
+            input: {hint: "[reconnect]"},
+        };
+        expect(withFeatureChanges([commands([status, baselineMcp])])).toEqual([commands([status, mcp])]);
+        expect(withFeatureChanges([commands([status, otherMcp])])).toEqual([commands([status, otherMcp])]);
     });
 
     it.runIf(RECORD_BASELINE)("records the baseline", () => {

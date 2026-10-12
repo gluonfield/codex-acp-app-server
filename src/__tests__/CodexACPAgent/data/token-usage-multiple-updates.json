@@ -4,6 +4,7 @@
     "totalTokens": 3500,
     "inputTokens": 2300,
     "cachedReadTokens": 500,
+    "cachedWriteTokens": 0,
     "outputTokens": 600,
     "thoughtTokens": 100
   },
@@ -13,6 +14,7 @@
       "token_count": {
         "inputTokens": 2300,
         "cachedInputTokens": 500,
+        "cacheWriteInputTokens": 0,
         "outputTokens": 600,
         "reasoningOutputTokens": 100,
         "totalTokens": 3500
@@ -23,6 +25,7 @@
           "token_count": {
             "inputTokens": 2300,
             "cachedInputTokens": 500,
+            "cacheWriteInputTokens": 0,
             "outputTokens": 600,
             "reasoningOutputTokens": 100,
             "totalTokens": 3500

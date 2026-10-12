@@ -20,7 +20,7 @@ it('separates restored history, new turns, counter resets, and context estimates
     const second = toTokenCount(nativeUsage[1]!.last);
     tracker.record('new', second, second);
     expect(tracker.usage?.totalTokens).toBe(first.totalTokens + second.totalTokens);
-    const estimate = {inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 20_000};
+    const estimate = {inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 20_000};
     tracker.record('new', estimate, estimate);
     tracker.record('new', second, second);
     expect(tracker.usage?.totalTokens).toBe(first.totalTokens + second.totalTokens);

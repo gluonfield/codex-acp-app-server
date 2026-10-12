@@ -14,6 +14,7 @@
               "totalTokens": 1000,
               "inputTokens": 800,
               "cachedReadTokens": 0,
+              "cachedWriteTokens": 0,
               "outputTokens": 200,
               "thoughtTokens": 0
             }
@@ -37,6 +38,7 @@
               "totalTokens": 2000,
               "inputTokens": 1600,
               "cachedReadTokens": 0,
+              "cachedWriteTokens": 0,
               "outputTokens": 400,
               "thoughtTokens": 0
             }
@@ -60,6 +62,7 @@
               "totalTokens": 3500,
               "inputTokens": 2300,
               "cachedReadTokens": 500,
+              "cachedWriteTokens": 0,
               "outputTokens": 600,
               "thoughtTokens": 100
             }

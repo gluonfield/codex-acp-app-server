@@ -13,8 +13,8 @@ import type {
     ApprovalHandler,
     CodexAppServerClient,
     ElicitationHandler,
-    McpStartupResult,
 } from "./CodexAppServerClient";
+import type {McpServerStartupWaitOptions, McpStartupResult} from "./mcp/McpStartupTracker";
 import open from "open";
 import type {Disposable} from "vscode-jsonrpc";
 import type {
@@ -28,12 +28,15 @@ import {ModelId} from "./ModelId";
 import {AgentMode} from "./AgentMode";
 import path from "node:path";
 import {logger} from "./Logger";
+import {isAccountReadAuthFailureError, isAccountReadUnavailableError} from "./CodexThreadErrors";
 import {sanitizeMcpServerName} from "./McpServerName";
+import {listedSessionTitle} from "./SessionTitle";
 import type {
     AccountLoginCompletedNotification,
     AccountUpdatedNotification,
     GetAccountRateLimitsResponse,
     GetAccountResponse,
+    ListMcpServerStatusParams,
     ListMcpServerStatusResponse,
     McpServerOauthLoginCompletedNotification,
     McpServerOauthLoginParams,
@@ -72,6 +75,7 @@ import {
     isUnknownThreadError,
     threadActiveWriterRequestError,
 } from "./CodexThreadErrors";
+import {airCustomInstructions} from "./AirExtension";
 export type {SessionMetadata, SessionMetadataWithThread} from "./SessionMetadata";
 
 /**
@@ -101,6 +105,14 @@ const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 
 export type CreateUrlElicitationRequest = Extract<acp.CreateElicitationRequest, {mode: "url"}>;
 export type UrlElicitationRequest = Omit<CreateUrlElicitationRequest, "mode" | "requestId">;
+
+/** The answer of {@link CodexAcpClient.readAuthRequirement}. */
+export interface AuthRequirement {
+    /** Whether the agent needs a login before it opens a session. */
+    required: boolean;
+    /** The account read that gave the answer, or `null` when the adapter did not read the account. */
+    account: GetAccountResponse | null;
+}
 
 export interface UrlElicitationRequester {
     elicitUrl(request: UrlElicitationRequest): Promise<acp.CreateElicitationResponse>;
@@ -159,6 +171,22 @@ export class CodexAcpClient {
         return this.codexClient;
     }
 
+    /**
+     * A client of the same configuration for another app-server: the same config, model provider and model metadata. The routing
+     * that the agent set at runtime (gateway auth, `providers/set`) is copied by {@link adoptRoutingFrom}.
+     */
+    withAppServer(codexClient: CodexAppServerClient): CodexAcpClient {
+        const client = new CodexAcpClient(codexClient, this.config, this.modelProvider ?? undefined, this.modelMetadata);
+        client.adoptRoutingFrom(this);
+        return client;
+    }
+
+    /** Takes the runtime routing of `previous`, the client that this client replaces. */
+    adoptRoutingFrom(previous: CodexAcpClient): void {
+        this.gatewayConfig = previous.gatewayConfig;
+        this.gatewayConfigSource = previous.gatewayConfigSource;
+    }
+
     private readonly defaultClientInfo: ClientInfo = {
         name: `${packageJson.name}`, title: "Codex ACP", version: `${packageJson.version}`
     };
@@ -176,6 +204,14 @@ export class CodexAcpClient {
             }
         });
         this.configPath = response?.codexHome ?? null;
+        this.isInitialized = true;
+    }
+
+    private isInitialized = false;
+
+    /** The app-server `initialize` handshake of this client succeeded. */
+    get initialized(): boolean {
+        return this.isInitialized;
     }
 
     getHomePath(): string | null {
@@ -212,6 +248,7 @@ export class CodexAcpClient {
     private async authenticateWithApiKey(authRequest: ApiKeyAuthRequest): Promise<Boolean> {
         const apiKey = authRequest._meta?.["api-key"]?.apiKey ?? this.readApiKeyFromEnv();
         const loginCompletedPromise = this.awaitNextLoginCompleted();
+        loginCompletedPromise.catch(() => {});
         await this.codexClient.accountLogin({
             type: "apiKey",
             apiKey,
@@ -221,11 +258,11 @@ export class CodexAcpClient {
     }
 
     private async authenticateWithChatGpt(): Promise<Boolean> {
-        const accountResponse = await this.codexClient.accountRead({refreshToken: true});
-        if (accountResponse.account?.type === "chatgpt") {
+        if (await this.hasWorkingChatGptLogin()) {
             return true;
         }
         const loginCompletedPromise = this.awaitNextLoginCompleted();
+        loginCompletedPromise.catch(() => {});
         const loginResponse = await this.codexClient.accountLogin({type: "chatgpt"});
         if (loginResponse.type == "chatgpt") {
             await open(loginResponse.authUrl);
@@ -234,15 +271,40 @@ export class CodexAcpClient {
         return result.success;
     }
 
+    /**
+     * Reads with a token refresh whether the agent has a ChatGPT login that a new login does not need to replace.
+     *
+     * An unavailable read answers `true`: only a ChatGPT login runs the routing discovery that failed, see
+     * {@link isAccountReadUnavailableError}, and a new login cannot run without the network either.
+     * A read that failed because the login does not work answers `false`, so a new login replaces it, see
+     * {@link isAccountReadAuthFailureError}. Another error rejects.
+     */
+    private async hasWorkingChatGptLogin(): Promise<boolean> {
+        try {
+            const accountResponse = await this.codexClient.accountRead({refreshToken: true});
+            return accountResponse.account?.type === "chatgpt";
+        } catch (error) {
+            if (isAccountReadUnavailableError(error)) {
+                logger.log("Account read unavailable, so the stored ChatGPT login stays", {error: String(error)});
+                return true;
+            }
+            if (isAccountReadAuthFailureError(error)) {
+                logger.log("The stored ChatGPT login does not work, so a new login starts", {error: String(error)});
+                return false;
+            }
+            throw error;
+        }
+    }
+
     private async authenticateWithChatGptDeviceCode(urlElicitationRequester?: UrlElicitationRequester): Promise<Boolean> {
-        const accountResponse = await this.codexClient.accountRead({refreshToken: true});
-        if (accountResponse.account?.type === "chatgpt") {
+        if (await this.hasWorkingChatGptLogin()) {
             return true;
         }
         if (!urlElicitationRequester) {
             throw RequestError.invalidRequest(undefined, "Device code authentication requires URL elicitation support");
         }
         const loginCompletedPromise = this.awaitNextLoginCompleted();
+        loginCompletedPromise.catch(() => {});
         const loginResponse = await this.codexClient.accountLogin({type: "chatgptDeviceCode"});
         if (loginResponse.type !== "chatgptDeviceCode") {
             return false;
@@ -252,30 +314,41 @@ export class CodexAcpClient {
             message: `Sign in to ChatGPT and enter this code: ${loginResponse.userCode}`,
             elicitationId: loginResponse.loginId,
         }));
-        const first = await Promise.race([
-            loginCompletedPromise.then(result => ({
-                type: "loginCompleted" as const,
-                result,
-            })),
-            elicitationResponsePromise.then(response => ({
-                type: "elicitationResponse" as const,
-                response,
-            })),
-        ]);
+        try {
+            const first = await Promise.race([
+                loginCompletedPromise.then(result => ({
+                    type: "loginCompleted" as const,
+                    result,
+                })),
+                elicitationResponsePromise.then(response => ({
+                    type: "elicitationResponse" as const,
+                    response,
+                })),
+            ]);
 
-        if (first.type === "loginCompleted") {
+            if (first.type === "loginCompleted") {
+                await urlElicitationRequester.completeElicitation();
+                return first.result.success;
+            }
+
+            if (!acp.CreateElicitationResponse.isAccept(first.response)) {
+                await this.codexClient.accountLoginCancel({loginId: loginResponse.loginId});
+                throw RequestError.requestCancelled(
+                    {methodId: "chat-gpt-device-code", action: first.response.action},
+                    "ChatGPT device code sign-in was cancelled",
+                );
+            }
+
+            const result = await loginCompletedPromise;
             await urlElicitationRequester.completeElicitation();
-            return first.result.success;
+            return result.success;
+        } catch (error) {
+            // A lost app-server ends the login: the open URL elicitation must not stay open in the client.
+            if (this.codexClient.connectionLoss.lost) {
+                await Promise.resolve(urlElicitationRequester.completeElicitation()).catch(() => {});
+            }
+            throw error;
         }
-
-        if (!acp.CreateElicitationResponse.isAccept(first.response)) {
-            await this.codexClient.accountLoginCancel({loginId: loginResponse.loginId});
-            return false;
-        }
-
-        const result = await loginCompletedPromise;
-        await urlElicitationRequester.completeElicitation();
-        return result.success;
     }
 
     private authenticateWithGateway(authRequest: GatewayAuthRequest): boolean {
@@ -361,18 +434,20 @@ export class CodexAcpClient {
             );
         }
         const accountUpdatedPromise = this.awaitNextAccountUpdated();
+        accountUpdatedPromise.catch(() => {});
         await this.codexClient.accountLogout();
         await accountUpdatedPromise;
     }
 
-    async authRequired(): Promise<Boolean> {
+    /** Reads whether the agent needs a login, with the account read that gave the answer. */
+    async readAuthRequirement(): Promise<AuthRequirement> {
         if (!this.usesOpenAiAccountAuth()) {
             // Custom providers authenticate through their configured environment.
-            return false;
+            return {required: false, account: null};
         }
 
-        const response = await this.codexClient.accountRead({refreshToken: false})
-        return response.requiresOpenaiAuth && !response.account;
+        const response = await this.codexClient.accountRead({refreshToken: false});
+        return {required: response.requiresOpenaiAuth && !response.account, account: response};
     }
 
     /**
@@ -612,9 +687,10 @@ export class CodexAcpClient {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
         await this.refreshSkills(request.cwd, additionalDirectories);
 
+        const sessionConfig = await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []);
         const response = await this.resumeThread({
             excludeTurns: true,
-            config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
+            config: sessionConfig.config,
             cwd: request.cwd,
             modelProvider: await this.getResumeModelProvider(),
             threadId: request.sessionId,
@@ -632,10 +708,14 @@ export class CodexAcpClient {
             modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
+            skippedMcpServers: sessionConfig.skippedMcpServers,
         }
     }
 
-    async forkSession(request: acp.ForkSessionRequest): Promise<SessionMetadata> {
+    async forkSession(
+        request: acp.ForkSessionRequest,
+        releaseFailedFork: (threadId: string) => Promise<void> = threadId => this.closeSession(threadId),
+    ): Promise<SessionMetadata> {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
         return await runForkSession(request, additionalDirectories, {
             codexClient: this.codexClient,
@@ -647,6 +727,7 @@ export class CodexAcpClient {
             createCurrentModelId: (models, model, reasoningEffort) =>
                 this.createModelId(models, model, reasoningEffort).toString(),
             getCollaborationMode: sessionId => this.getCollaborationMode(sessionId),
+            releaseFailedFork,
         });
     }
 
@@ -654,9 +735,10 @@ export class CodexAcpClient {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
         await this.refreshSkills(request.cwd, additionalDirectories);
 
+        const sessionConfig = await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []);
         const response = await this.resumeThread({
             excludeTurns: true,
-            config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers ?? []),
+            config: sessionConfig.config,
             cwd: request.cwd,
             modelProvider: await this.getResumeModelProvider(),
             threadId: request.sessionId,
@@ -693,6 +775,7 @@ export class CodexAcpClient {
             thread,
             history,
             additionalDirectories,
+            skippedMcpServers: sessionConfig.skippedMcpServers,
         };
     }
 
@@ -724,12 +807,15 @@ export class CodexAcpClient {
 
     async newSession(request: acp.NewSessionRequest): Promise<SessionMetadata> {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
+        const developerInstructions = airCustomInstructions(request._meta);
         await this.refreshSkills(request.cwd, additionalDirectories);
 
+        const sessionConfig = await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers);
         const response = await this.codexClient.threadStart({
-            config: await this.createSessionConfig(request.cwd, additionalDirectories, request.mcpServers),
+            config: sessionConfig.config,
             modelProvider: this.getModelProvider(),
             cwd: request.cwd,
+            ...(developerInstructions !== undefined && {developerInstructions}),
         });
 
         const codexModels = await this.fetchAvailableModels();
@@ -745,6 +831,7 @@ export class CodexAcpClient {
             modelProvider: response.modelProvider,
             currentServiceTier: response.serviceTier as ServiceTier ?? null,
             additionalDirectories,
+            skippedMcpServers: sessionConfig.skippedMcpServers,
         };
     }
 
@@ -773,7 +860,7 @@ export class CodexAcpClient {
             });
         } else {
             const model = ModelId.fromString(parent.currentModelId);
-            const config = await this.createSessionConfig(
+            const {config} = await this.createSessionConfig(
                 parent.cwd,
                 parent.additionalDirectories,
                 parent.mcpServers,
@@ -902,19 +989,23 @@ export class CodexAcpClient {
         await this.codexClient.runGoalClear({threadId: sessionId});
     }
 
-    async awaitMcpServerStartup(serverNames: Array<string>, afterVersion: number): Promise<McpStartupResult> {
-        return await this.codexClient.awaitMcpServerStartup(serverNames, afterVersion);
+    async awaitMcpServerStartup(
+        serverNames: Array<string>,
+        afterVersion: number,
+        options: McpServerStartupWaitOptions,
+    ): Promise<McpStartupResult> {
+        return await this.codexClient.mcpStartup.await(serverNames, afterVersion, options);
     }
 
     getMcpServerStartupVersion(): number {
-        return this.codexClient.getMcpServerStartupVersion();
+        return this.codexClient.mcpStartup.version();
     }
 
     private async createSessionConfig(
         projectPath: string,
         additionalDirectories: string[],
         mcpServers: Array<McpServer>
-    ): Promise<JsonObject> {
+    ): Promise<SessionConfig> {
         const sessionRoots = [projectPath, ...additionalDirectories];
         const activeProvider = this.gatewayConfig
             ? {
@@ -937,7 +1028,7 @@ export class CodexAcpClient {
         };
         const configWithWorkspaceRoots = mergeSandboxWorkspaceWriteRoots(mergedConfig, additionalDirectories);
         if (mcpServers.length === 0) {
-            return configWithWorkspaceRoots;
+            return {config: configWithWorkspaceRoots, skippedMcpServers: []};
         }
 
         const requestedServers = mcpServers.map(mcp => ({
@@ -950,13 +1041,25 @@ export class CodexAcpClient {
             const existingNames = await this.getConfigMcpServerNames(projectPath);
             serversToConfigure = requestedServers.filter(mcp => !existingNames.has(mcp.name));
         }
+        const skippedMcpServers = requestedServers
+            .filter(mcp => !serversToConfigure.includes(mcp))
+            .map(mcp => mcp.name);
+        if (skippedMcpServers.length > 0) {
+            logger.log("Skipping requested MCP servers that the Codex config already defines", {
+                projectPath,
+                skippedMcpServers,
+            });
+        }
         if (serversToConfigure.length === 0) {
-            return configWithWorkspaceRoots;
+            return {config: configWithWorkspaceRoots, skippedMcpServers};
         }
 
         return {
-            ...configWithWorkspaceRoots,
-            "mcp_servers": Object.fromEntries(serversToConfigure.map(mcp => [mcp.name, this.createMcpSeverConfig(mcp.server)])),
+            config: {
+                ...configWithWorkspaceRoots,
+                "mcp_servers": Object.fromEntries(serversToConfigure.map(mcp => [mcp.name, this.createMcpSeverConfig(mcp.server)])),
+            },
+            skippedMcpServers,
         };
     }
 
@@ -1209,21 +1312,23 @@ export class CodexAcpClient {
         method: "account/login/completed" | "account/updated",
         mapEvent: (event: T) => T,
     ): Promise<T> {
-        return await new Promise((resolve) => {
-            let disposable: Disposable | undefined;
+        let disposable: Disposable | undefined;
+        const notified = new Promise<T>((resolve) => {
             disposable = this.codexClient.connection.onNotification(method, (event: T) => {
                 disposable?.dispose();
                 resolve(mapEvent(event));
             });
         });
+        return await this.codexClient.waitWhileConnected(method, notified, () => disposable?.dispose());
     }
 
-    async refreshMcpServers(): Promise<void> {
-        await this.codexClient.refreshMcpServers();
+    async listMcpServers(params: ListMcpServerStatusParams): Promise<ListMcpServerStatusResponse> {
+        return this.codexClient.listMcpServerStatus(params);
     }
 
-    async listMcpServers(): Promise<ListMcpServerStatusResponse> {
-        return this.codexClient.listMcpServerStatus({});
+    /** Reloads the MCP configuration. Codex reconnects the servers of every loaded thread that failed, closed, or changed. */
+    async reloadMcpServers(): Promise<void> {
+        await this.codexClient.mcpServerReload();
     }
 
     async mcpServerOauthLogin(
@@ -1235,8 +1340,9 @@ export class CodexAcpClient {
     async awaitMcpServerOauthLoginCompleted(
         name: string,
         threadId: string,
+        signal?: AbortSignal,
     ): Promise<McpServerOauthLoginCompletedNotification> {
-        return await this.codexClient.awaitMcpServerOauthLoginCompleted(name, threadId);
+        return await this.codexClient.mcpOauthCompletions.await(name, threadId, signal);
     }
 
     async listSessions(request: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
@@ -1270,7 +1376,7 @@ export class CodexAcpClient {
         const mapThreadToSession = (thread: Thread) => ({
             sessionId: thread.id,
             cwd: thread.cwd,
-            title: (thread.name ?? thread.preview) || null,
+            title: listedSessionTitle(thread),
             updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
         });
 
@@ -1321,6 +1427,11 @@ export class CodexAcpClient {
         return models;
     }
 
+}
+
+export type SessionConfig = {
+    config: JsonObject,
+    skippedMcpServers: string[],
 }
 
 function buildPromptItems(prompt: acp.ContentBlock[]): UserInput[] {

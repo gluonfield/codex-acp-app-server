@@ -47,6 +47,23 @@ function completeTurn(fixture: RecoveryFixture, sessionId: string, turnId = "tur
 }
 
 describe("app-server recovery", () => {
+    it("starts a side conversation on the recovered app-server after an idle crash", async () => {
+        const fixture = createRecoveryFixture();
+        const sessionId = await openSession(fixture);
+        await fixture.kill();
+
+        const {prompt} = await startTurn(fixture, sessionId, "/btw what changed?");
+        const server = fixture.current();
+        expect(fixture.servers).toHaveLength(2);
+        expect(requestsOf(server, "thread/start")).toEqual([
+            expect.objectContaining({ephemeral: true}),
+        ]);
+        completeTurn(fixture, "title-thread");
+        await expect(prompt).resolves.toMatchObject({stopReason: "end_turn"});
+        await fixture.agent.closeSession({sessionId});
+        expect(requestsOf(server, "thread/unsubscribe")).toContainEqual({threadId: "title-thread"});
+    });
+
     it("starts the app-server again on the next request after an idle crash, with the same handshake", async () => {
         const fixture = createRecoveryFixture();
         await openSession(fixture);

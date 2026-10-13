@@ -1,4 +1,4 @@
-import {PromptTokenUsage, toTokenCount, usageUpdate} from "../TokenCount";
+import {TurnTokenUsage, toTokenCount, usageUpdate} from "../TokenCount";
 import type {ServerNotification} from "../app-server";
 import type {ThreadItem} from "../app-server/v2";
 import type {ACPSessionConnection, UpdateSessionEvent} from "../ACPSessionConnection";
@@ -45,7 +45,7 @@ export type ClosingChildSession = {
 export class CodexSubagentEventRouter {
     private static readonly DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
 
-    private readonly usageByThread = new Map<string, PromptTokenUsage>();
+    private readonly usageByThread = new Map<string, TurnTokenUsage>();
     private readonly children = new Map<string, NativeSubagent>();
     private readonly pendingSpawns = new Map<string, PendingSubagent>();
     private readonly terminalPendingSpawns = new Map<string, EndedSpawn>();
@@ -69,7 +69,7 @@ export class CodexSubagentEventRouter {
         if (notification.method === "turn/started" && notification.params.threadId !== this.rootSessionId) {
             const tracker = this.usageByThread.get(notification.params.threadId);
             if (tracker?.id !== notification.params.turn.id) {
-                const next = new PromptTokenUsage();
+                const next = new TurnTokenUsage();
                 next.start(notification.params.turn.id);
                 this.usageByThread.set(notification.params.threadId, next);
             }
@@ -109,7 +109,7 @@ export class CodexSubagentEventRouter {
                     }
                 }
             }
-            return true;
+            return tracker !== undefined;
         }
         const notificationThreadId = (notification.params as {threadId?: unknown}).threadId;
         if (typeof notificationThreadId === "string" && this.pendingSpawns.has(notificationThreadId)) {

@@ -67,7 +67,7 @@ import {
     REASONING_EFFORT_CONFIG_ID,
 } from "./ModelConfigOption";
 import type {TokenCount} from "./TokenCount";
-import {PromptTokenUsage, toPromptUsage} from "./TokenCount";
+import {TurnTokenUsage, toPromptUsage} from "./TokenCount";
 import {CodexCommands, GOAL_CONTINUATION_PROMPT} from "./CodexCommands";
 import {SteeringQueue} from "./SteeringQueue";
 import type {QuotaMeta} from "./QuotaMeta";
@@ -202,7 +202,7 @@ export interface SessionState extends SessionIndexTitleState {
     collaborationMode: ModeKind,
     currentTurnId: string | null;
     lastTokenUsage: TokenCount | null;
-    promptTokenUsage: PromptTokenUsage;
+    promptTokenUsage: TurnTokenUsage;
     totalTokenUsage: TokenCount | null;
     modelContextWindow: number | null;
     rateLimits: RateLimitsMap | null;
@@ -336,7 +336,7 @@ export class CodexAcpServer {
     private readonly getRecentStderr: () => string;
     private readonly sessionFailureEpoch: string;
     private availableCommands: CodexCommands;
-    private sideChats: SideChatManager;
+    private readonly sideChats: SideChatManager;
     private clientInfo: acp.Implementation | null;
     private clientCapabilities: acp.ClientCapabilities | null;
     /** The capability choices of the client for tool call and plan reports. */
@@ -434,7 +434,7 @@ export class CodexAcpServer {
         this.availableCommands = this.createAvailableCommands(codexAcpClient);
         this.sideChats = new SideChatManager(
             connection,
-            codexAcpClient,
+            () => this.codexAcpClient,
             () => this.clientCapabilities,
             operation => this.runWithProcessCheck(operation),
         );
@@ -935,7 +935,7 @@ export class CodexAcpServer {
             collaborationMode: sessionMetadata.collaborationMode,
             currentTurnId: null,
             lastTokenUsage: null,
-            promptTokenUsage: new PromptTokenUsage(),
+            promptTokenUsage: new TurnTokenUsage(),
             totalTokenUsage: null,
             modelContextWindow: this.codexAcpClient.getModelContextWindow(
                 ModelId.fromString(currentModelId).model,
@@ -1484,12 +1484,6 @@ export class CodexAcpServer {
             this.codexAcpClient = replacement;
             this.sessionIndex.observe(replacement);
             this.availableCommands = this.createAvailableCommands(replacement);
-            this.sideChats = new SideChatManager(
-                this.reportingConnection.client,
-                replacement,
-                () => this.clientCapabilities,
-                operation => this.runWithProcessCheck(operation),
-            );
 
             const resumeErrors: unknown[] = [];
             this.recovery?.completeReplacement(replacement);
@@ -1625,6 +1619,7 @@ export class CodexAcpServer {
                 : null,
             install: (client) => this.installCodexClient(client),
             crashed: () => {
+                this.sideChats.reset();
                 // Every session takes its tasks now, before any await, so a task that a restarted app-server starts
                 // meanwhile is not failed with the old ones.
                 for (const session of this.sessions.values()) {
@@ -1662,12 +1657,6 @@ export class CodexAcpServer {
         // The session index watches the thread notifications of the app-server that runs now.
         this.sessionIndex.observe(client);
         this.availableCommands = this.createAvailableCommands(client);
-        this.sideChats = new SideChatManager(
-            this.reportingConnection.client,
-            client,
-            () => this.clientCapabilities,
-            operation => this.runWithProcessCheck(operation),
-        );
         for (const session of this.sessions.values()) {
             session.asyncTasks.setAppServer(client.appServerClient);
         }
@@ -2530,7 +2519,7 @@ export class CodexAcpServer {
             collaborationMode: sessionMetadata.collaborationMode,
             currentTurnId: null,
             lastTokenUsage: null,
-            promptTokenUsage: new PromptTokenUsage(),
+            promptTokenUsage: new TurnTokenUsage(),
             totalTokenUsage: null,
             modelContextWindow: this.codexAcpClient.getModelContextWindow(
                 ModelId.fromString(currentModelId).model,
@@ -3289,6 +3278,7 @@ export class CodexAcpServer {
         const promptCommand = parsePromptCommand(params.prompt);
         const sideChat = parseSideChatPrompt(params, promptCommand);
         if (sideChat) {
+            await this.ensureSessionReady(sessionState);
             return await this.sideChats.prompt(sideChat.request, sessionState, sideChat.scope, signal);
         }
         const activePrompt = this.trackActivePrompt(params.sessionId)
@@ -3319,7 +3309,7 @@ export class CodexAcpServer {
         let promptWasCancelled = false;
         let recoverableSessionFailure = sessionState.sessionFailure;
         sessionState.currentTurnId = null;
-        sessionState.promptTokenUsage = new PromptTokenUsage();
+        sessionState.promptTokenUsage = new TurnTokenUsage();
         let pendingTurnStart: PendingTurnStart | null = null;
         const ensurePendingTurnStart = (): PendingTurnStart => {
             if (pendingTurnStart === null) {

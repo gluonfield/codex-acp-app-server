@@ -1163,13 +1163,19 @@ export class CodexEventHandler {
     }
 
     private createUsageUpdate(params: ThreadTokenUsageUpdatedNotification): UpdateSessionEvent | null {
-        this.handleTokenUsageUpdated(params);
-
-        return usageUpdate(
-            this.sessionState.promptTokenUsage,
-            toTokenCount(params.tokenUsage.last),
-            params.tokenUsage.modelContextWindow,
-        );
+        if (params.threadId === this.sessionState.sessionId) {
+            this.handleTokenUsageUpdated(params);
+            return usageUpdate(
+                this.sessionState.promptTokenUsage,
+                toTokenCount(params.tokenUsage.last),
+                params.tokenUsage.modelContextWindow,
+            );
+        }
+        const size = params.tokenUsage.modelContextWindow;
+        if (!this.subagents.isNativeSubagentThread(params.threadId) || size === null || size <= 0) {
+            return null;
+        }
+        return {sessionUpdate: "usage_update", used: params.tokenUsage.last.totalTokens, size};
     }
 
     private handleRateLimitsUpdated(params: AccountRateLimitsUpdatedNotification): void {

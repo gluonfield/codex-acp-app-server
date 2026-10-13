@@ -6,7 +6,7 @@ import {CodexAcpClient} from "./CodexAcpClient";
 import type {SessionState} from "./CodexAcpServer";
 import {CodexTurn} from "./CodexTurn";
 import {scopedAcpConnection} from "./ScopedAcpConnection";
-import {PromptTokenUsage, toPromptUsage} from "./TokenCount";
+import {TurnTokenUsage, toPromptUsage} from "./TokenCount";
 import {logger} from "./Logger";
 import type {PromptCommand} from "./PromptCommand";
 
@@ -53,10 +53,14 @@ export class SideChatManager {
 
     constructor(
         private readonly connection: AcpClientConnection,
-        private readonly codex: CodexAcpClient,
+        private readonly codex: () => CodexAcpClient,
         private readonly clientCapabilities: () => acp.ClientCapabilities | null,
         private readonly run: <T>(operation: () => Promise<T>) => Promise<T>,
     ) {}
+
+    reset(): void {
+        this.parents.clear();
+    }
 
     async prompt(
         request: acp.PromptRequest,
@@ -156,14 +160,14 @@ export class SideChatManager {
     }
 
     private async createChat(parent: SessionState): Promise<SessionState> {
-        const fork = await this.run(() => this.codex.forkSideSession(parent, SIDE_DEVELOPER_INSTRUCTIONS));
+        const fork = await this.run(() => this.codex().forkSideSession(parent, SIDE_DEVELOPER_INSTRUCTIONS));
         return {
             ...parent,
             sessionId: fork.sessionId,
             currentModelId: fork.currentModelId,
             currentTurnId: null,
             lastTokenUsage: null,
-            promptTokenUsage: new PromptTokenUsage(),
+            promptTokenUsage: new TurnTokenUsage(),
             totalTokenUsage: null,
             rateLimits: null,
             currentGoal: null,
@@ -181,7 +185,7 @@ export class SideChatManager {
         const state = prompt.state;
         state.currentTurnId = null;
         state.lastTokenUsage = null;
-        state.promptTokenUsage = new PromptTokenUsage();
+        state.promptTokenUsage = new TurnTokenUsage();
         const connection = scopedAcpConnection(this.connection, parentSessionId, {
             codex: {
                 sideChat: {
@@ -194,7 +198,7 @@ export class SideChatManager {
         });
         const turn = await CodexTurn.prepare(
             connection,
-            this.codex,
+            this.codex(),
             state,
             this.clientCapabilities(),
             operation => this.run(operation),
@@ -239,7 +243,7 @@ export class SideChatManager {
         const turnId = prompt.turnId;
         prompt.turnId = null;
         try {
-            await this.codex.turnInterrupt({
+            await this.codex().turnInterrupt({
                 threadId: prompt.state.sessionId,
                 turnId,
             });
@@ -250,7 +254,7 @@ export class SideChatManager {
 
     private async closeChat(state: SessionState): Promise<void> {
         try {
-            await this.run(() => this.codex.closeSession(state.sessionId));
+            await this.run(() => this.codex().closeSession(state.sessionId));
         } catch (error) {
             logger.error(`Failed to close side chat ${state.sessionId}`, error);
         }

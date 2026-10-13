@@ -1,9 +1,9 @@
 import {expect, it} from 'vitest';
-import {PromptTokenUsage, toTokenCount} from '../TokenCount';
+import {TurnTokenUsage, toTokenCount} from '../TokenCount';
 import nativeUsage from './CodexACPAgent/data/native-token-usage-20260910.json';
 
 it('separates restored history, new turns, counter resets, and context estimates', () => {
-    const tracker = new PromptTokenUsage();
+    const tracker = new TurnTokenUsage();
     const first = toTokenCount(nativeUsage[0]!.last);
     tracker.record('historical', first, first);
     expect(tracker.usage).toBeNull();
@@ -28,5 +28,5 @@ it('separates restored history, new turns, counter resets, and context estimates
     tracker.start('next');
     tracker.record('next', first, first);
     expect(tracker.usage?.totalTokens).toBe(2 * first.totalTokens + second.totalTokens);
-    expect(new PromptTokenUsage().usage).toBeNull();
+    expect(new TurnTokenUsage().usage).toBeNull();
 });

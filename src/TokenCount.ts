@@ -22,7 +22,7 @@ export interface TokenCount {
     reasoningOutputTokens: number;
 }
 
-export class PromptTokenUsage {
+export class TurnTokenUsage {
     id: string | null = null;
     private turnId: string | null = null;
     private previousTotal: number | null = null;
@@ -96,7 +96,7 @@ export function toPromptUsage(tokenCount: TokenCount): Usage {
     };
 }
 
-export function usageUpdate(tracker: PromptTokenUsage, last: TokenCount, size: number | null): UpdateSessionEvent | null {
+export function usageUpdate(tracker: TurnTokenUsage, last: TokenCount, size: number | null): UpdateSessionEvent | null {
     const meta = tracker.usage === null ? undefined : {usageId: tracker.id, usage: toPromptUsage(tracker.usage)};
     if (size === null || size <= 0) {
         return meta === undefined ? null : {sessionUpdate: "session_info_update", _meta: meta};

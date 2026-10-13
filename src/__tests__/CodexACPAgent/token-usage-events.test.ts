@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ServerNotification } from '../../app-server';
 import { createCodexMockTestFixture, createTestEventHandler, createTestSessionState, type CodexMockTestFixture } from '../acp-test-utils';
-import { PromptTokenUsage, toPromptUsage, toTokenCount, type TokenCount } from '../../TokenCount';
+import { TurnTokenUsage, toPromptUsage, toTokenCount, type TokenCount } from '../../TokenCount';
 import type { TokenUsageBreakdown } from '../../app-server/v2';
 import type { SessionState } from '../../CodexAcpServer';
 import nativeUsage from './data/native-token-usage-20260910.json';
@@ -649,7 +649,7 @@ describe('Token Usage Events', () => {
                 turn: { id: 'turn-id', items: [], status: 'inProgress', error: null },
             });
             mockFixture.getCodexAppServerClient().awaitTurnCompleted = vi.fn().mockImplementation(async () => {
-                for (const notification of [turnStarted(sessionId), childSpawned, turnStarted(childThreadId, 'child-turn-id'), reasoningStarted(sessionId), parentUsage, childUsage, childCompleted]) {
+                for (const notification of [turnStarted(sessionId), childSpawned, reasoningStarted(sessionId), parentUsage, childUsage, childCompleted]) {
                     mockFixture.sendServerNotification(notification);
                 }
                 return {
@@ -680,7 +680,7 @@ describe('Token Usage Events', () => {
         it('ignores the usage of a thread that is not the session or its subagent', async () => {
             const sessionState = createTestSessionState({ sessionId });
             const handler = createTestEventHandler(mockFixture.getAcpConnection(), sessionState);
-            sessionState.promptTokenUsage = new PromptTokenUsage();
+            sessionState.promptTokenUsage = new TurnTokenUsage();
             sessionState.promptTokenUsage.start('turn-id');
 
             await handler.handleNotification(parentUsage);

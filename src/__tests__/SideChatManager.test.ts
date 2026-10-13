@@ -61,7 +61,7 @@ describe("SideChatManager", () => {
             notify: vi.fn().mockResolvedValue(undefined),
             request: vi.fn(),
         } as unknown as AcpClientConnection;
-        const manager = new SideChatManager(connection, codex, () => null, operation => operation());
+        const manager = new SideChatManager(connection, () => codex, () => null, operation => operation());
         const parent = createTestSessionState({sessionId: "parent"});
         const scope = {id: "side-1", command: "btw", parentSessionId: "parent"};
 
@@ -113,7 +113,7 @@ describe("SideChatManager", () => {
         } as unknown as CodexAcpClient;
         const manager = new SideChatManager(
             {notify: vi.fn(), request: vi.fn()} as unknown as AcpClientConnection,
-            codex,
+            () => codex,
             () => null,
             operation => operation(),
         );
@@ -144,7 +144,7 @@ describe("SideChatManager", () => {
         } as unknown as CodexAcpClient;
         const manager = new SideChatManager(
             {notify: vi.fn(), request: vi.fn()} as unknown as AcpClientConnection,
-            codex,
+            () => codex,
             () => null,
             operation => operation(),
         );
@@ -178,7 +178,7 @@ describe("SideChatManager", () => {
         } as unknown as CodexAcpClient;
         const manager = new SideChatManager(
             {notify: vi.fn(), request: vi.fn()} as unknown as AcpClientConnection,
-            codex,
+            () => codex,
             () => null,
             operation => operation(),
         );

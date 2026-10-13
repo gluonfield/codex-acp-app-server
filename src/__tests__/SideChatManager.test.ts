@@ -195,4 +195,50 @@ describe("SideChatManager", () => {
         await expect(prompting).resolves.toMatchObject({stopReason: "cancelled"});
         expect(codex.sendPrompt).not.toHaveBeenCalled();
     });
+
+    it("keeps closing side sessions with their original client after a reset", async () => {
+        const client = (sessionId: string) => ({
+            forkSideSession: vi.fn().mockResolvedValue({sessionId, currentModelId: "model-id[effort]"}),
+            subscribeToSessionEvents: vi.fn().mockResolvedValue(undefined),
+            sendPrompt: vi.fn().mockResolvedValue({turn: {id: "turn", status: "completed"}}),
+            waitForSessionNotifications: vi.fn().mockResolvedValue(undefined),
+            closeSession: vi.fn().mockResolvedValue(undefined),
+            turnInterrupt: vi.fn().mockResolvedValue(undefined),
+        });
+        const original = client("old-side");
+        const replacement = client("new-side");
+        let finishTurn!: (value: {turn: {id: string; status: string}}) => void;
+        original.sendPrompt.mockImplementationOnce(async (_request, _mode, _model, _tier, _summary, _cwd, _directories, onStarted) => {
+            onStarted("turn");
+            return new Promise(resolve => {
+                finishTurn = resolve;
+            });
+        });
+        let current = original;
+        const manager = new SideChatManager(
+            {notify: vi.fn(), request: vi.fn()} as unknown as AcpClientConnection,
+            () => current as unknown as CodexAcpClient,
+            () => null,
+            operation => operation(),
+        );
+        const parent = createTestSessionState({sessionId: "parent"});
+        const scope = {id: "side-1", command: "btw", parentSessionId: "parent"};
+        const request = {sessionId: "parent", prompt: [{type: "text" as const, text: "what changed?"}]};
+        const prompt = manager.prompt(request, parent, scope);
+        await vi.waitFor(() => expect(original.sendPrompt).toHaveBeenCalledOnce());
+        const closing = manager.closeParent("parent");
+        await vi.waitFor(() => expect(original.turnInterrupt).toHaveBeenCalledOnce());
+
+        manager.reset();
+        current = replacement;
+        await manager.prompt(request, parent, scope);
+        finishTurn({turn: {id: "turn", status: "interrupted"}});
+        await expect(prompt).resolves.toMatchObject({stopReason: "cancelled"});
+        await closing;
+        expect(original.closeSession).toHaveBeenCalledWith("old-side");
+        expect(replacement.closeSession).not.toHaveBeenCalled();
+
+        await manager.closeParent("parent");
+        expect(replacement.closeSession).toHaveBeenCalledWith("new-side");
+    });
 });

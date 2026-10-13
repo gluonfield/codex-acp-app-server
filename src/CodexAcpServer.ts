@@ -434,9 +434,15 @@ export class CodexAcpServer {
         this.availableCommands = this.createAvailableCommands(codexAcpClient);
         this.sideChats = new SideChatManager(
             connection,
-            () => this.codexAcpClient,
+            async parent => {
+                const ready = this.ensureSessionReady(parent);
+                if (ready) {
+                    await ready;
+                }
+                return this.codexAcpClient;
+            },
             () => this.clientCapabilities,
-            operation => this.runWithProcessCheck(operation),
+            (operation, client) => this.runWithProcessCheck(operation, client),
         );
         this.recovery = this.createRecovery();
     }
@@ -3278,7 +3284,6 @@ export class CodexAcpServer {
         const promptCommand = parsePromptCommand(params.prompt);
         const sideChat = parseSideChatPrompt(params, promptCommand);
         if (sideChat) {
-            await this.ensureSessionReady(sessionState);
             return await this.sideChats.prompt(sideChat.request, sessionState, sideChat.scope, signal);
         }
         const activePrompt = this.trackActivePrompt(params.sessionId)

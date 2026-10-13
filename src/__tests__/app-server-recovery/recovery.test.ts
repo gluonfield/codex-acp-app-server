@@ -47,6 +47,22 @@ function completeTurn(fixture: RecoveryFixture, sessionId: string, turnId = "tur
 }
 
 describe("app-server recovery", () => {
+    it("cancels a side conversation while its parent is resuming", async () => {
+        const fixture = createRecoveryFixture();
+        const sessionId = await openSession(fixture);
+        await fixture.kill();
+        fixture.answers.set("thread/resume", () => undefined);
+        const prompt = fixture.agent.prompt({sessionId, prompt: [{type: "text", text: "/btw what changed?"}]});
+        prompt.catch(() => undefined);
+        await vi.waitFor(() => expect(fixture.servers.length === 2 && fixture.current().rpc.hasPending("thread/resume")).toBe(true));
+
+        await fixture.agent.cancel({sessionId});
+        fixture.current().rpc.resolve("thread/resume", resumed(sessionId));
+        await expect(prompt).resolves.toMatchObject({stopReason: "cancelled"});
+        expect(requestsOf(fixture.current(), "turn/start")).toHaveLength(0);
+        await fixture.agent.closeSession({sessionId});
+    });
+
     it("starts a side conversation on the recovered app-server after an idle crash", async () => {
         const fixture = createRecoveryFixture();
         const sessionId = await openSession(fixture);

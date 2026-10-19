@@ -739,11 +739,11 @@ export class CodexAcpServer {
     }
 
     async handleError(e: Error){
-        if (e.message.includes("log out") || e.message.includes("cloud requirements")) {
+        if (e.message.includes("log out")) {
+            // A new login fixes this, as for a failed turn. A logout would revoke and delete the stored login,
+            // which another process on the same Codex home may have just refreshed.
             if (this.codexAcpClient.usesOpenAiAccountAuth()) {
-                await this.runWithProcessCheck(() => this.codexAcpClient.logout());
-                await this.refreshAuthState(null);
-                throw RequestError.internalError(`${e.message}\n\nYou have been logged out. Please try again.`);
+                throw RequestError.authRequired(undefined, e.message);
             }
             throw RequestError.internalError(e.message);
         }

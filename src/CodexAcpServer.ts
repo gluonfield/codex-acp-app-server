@@ -2070,7 +2070,10 @@ export class CodexAcpServer {
         if (result.status === "rejected") {
             throw result.reason
         }
-        return {...response, stopReason: result.value.stopReason}
+        // The AIR records of the turn, such as the typed failure that ended it, answer the steer as they
+        // answer the prompt; usage stays on the prompt response alone.
+        const air = result.value._meta?.[JETBRAINS_META_KEY]
+        return {...response, stopReason: result.value.stopReason, ...(air === undefined ? {} : {_meta: {[JETBRAINS_META_KEY]: air}})}
     }
 
     /**

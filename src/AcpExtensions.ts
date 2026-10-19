@@ -128,6 +128,8 @@ export type SessionSteerRequest = {
 export type SessionSteeringResponse = {
     outcome: "injected" | "startedNewTurn" | "failed";
     stopReason?: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
+    /** The AIR metadata of the turn's prompt response, such as the typed failure that ended it. */
+    _meta?: {[key: string]: unknown};
 }
 
 export type SessionSteeringExtRequest = {

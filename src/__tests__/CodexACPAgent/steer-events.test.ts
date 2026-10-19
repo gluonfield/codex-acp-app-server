@@ -138,6 +138,43 @@ describe('_session/steering', () => {
         }
     });
 
+    it('returns the failure that ends an injected steer\'s turn to a client with typed failures', async () => {
+        const {mockFixture, sessionState, turnCompleted} = startActiveTurn();
+        await mockFixture.getCodexAcpAgent().initialize({
+            protocolVersion: 1,
+            clientCapabilities: {_meta: {jetbrains: {air: {version: 1, capabilities: ["sessionFailure"]}}}},
+        });
+        vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer")
+            .mockResolvedValue({turnId: "turn-id"});
+        const promptPromise = mockFixture.getCodexAcpAgent().prompt({
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "long running prompt"}],
+        });
+        await vi.waitFor(() => {
+            expect(sessionState.currentTurnId).toBe("turn-id");
+        });
+        const steerPromise = mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "native follow-up"}],
+            waitForCompletion: true,
+        });
+
+        const error = {message: "Selected model is at capacity. Please try a different model.", codexErrorInfo: "serverOverloaded" as const, additionalDetails: null, misalignment: null};
+        mockFixture.sendServerNotification({
+            method: "error",
+            params: {threadId: "session-id", turnId: "turn-id", willRetry: false, error},
+        });
+        turnCompleted.resolve({threadId: "session-id", turn: {...createTurn("turn-id", "failed"), error}});
+
+        const failure = {
+            jetbrains: {air: {version: 1, sessionFailure: expect.objectContaining({
+                severity: "error", category: "service", title: error.message, actions: ["retry"],
+            })}},
+        };
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn", _meta: failure});
+        await expect(steerPromise).resolves.toEqual({outcome: "injected", stopReason: "end_turn", _meta: expect.objectContaining(failure)});
+    });
+
     it('retains the result when the turn completes before steering is acknowledged', async () => {
         const {mockFixture, sessionState, turnCompleted} = startActiveTurn()
         const acknowledgement = deferred<{turnId: string}>()

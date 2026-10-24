@@ -112,6 +112,11 @@ jobs:
           bun build src/index.ts --minify --sourcemap --compile
           --target=${{ matrix.bun-target }}
           --outfile=${{ matrix.executable }}
+      - name: Sign and verify macOS adapter
+        if: startsWith(matrix.platform, 'darwin-')
+        run: |
+          codesign --force --sign - ${{ matrix.executable }}
+          codesign --verify --strict ${{ matrix.executable }}
       - name: Package adapter with matching Codex runtime
         run: >-
           node scripts/package-release.mjs

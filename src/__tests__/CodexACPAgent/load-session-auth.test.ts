@@ -5,7 +5,7 @@ import type {GetAccountResponse} from "../../app-server/v2";
 const SESSION_ID = "session-1";
 const SIGNED_IN: GetAccountResponse = {
     account: {type: "chatgpt", email: "user@example.com", planType: "plus"},
-    requiresOpenaiAuth: true,
+    requiresOpenaiAuth: true, userId: null,
 } as GetAccountResponse;
 
 /** A fixture whose `thread/resume` answers a session with one history message. */
@@ -27,7 +27,7 @@ function loadFixture(): CodexMockTestFixture {
         reasoningEffort: model.defaultReasoningEffort,
     });
     appServer.threadItemsList = vi.fn().mockResolvedValue({
-        data: [{turnId: "turn-1", item: {type: "agentMessage", id: "m-1", text: "history", phase: null, memoryCitation: null, delivery: null, questions: null}}],
+        data: [{turnId: "turn-1", item: {type: "agentMessage", id: "m-1", text: "history", phase: null, moderation: null, memoryCitation: null, delivery: null, questions: null}}],
         nextCursor: null,
         backwardsCursor: null,
     });
@@ -66,7 +66,7 @@ describe("CodexACPAgent - loadSession auth", () => {
         const fixture = loadFixture();
         const client = fixture.getCodexAcpClient();
         const appServer = fixture.getCodexAppServerClient();
-        appServer.accountRead = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: true});
+        appServer.accountRead = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: true, userId: null});
         const closeSpy = vi.spyOn(client, "closeSession").mockResolvedValue(undefined as never);
         await initialize(fixture);
 
@@ -81,7 +81,7 @@ describe("CodexACPAgent - loadSession auth", () => {
     it("fails with auth_required when the resume also fails", async () => {
         const fixture = loadFixture();
         const appServer = fixture.getCodexAppServerClient();
-        appServer.accountRead = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: true});
+        appServer.accountRead = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: true, userId: null});
         appServer.threadResume = vi.fn().mockRejectedValue(new Error("no rollout found for thread id session-1"));
         await initialize(fixture);
 

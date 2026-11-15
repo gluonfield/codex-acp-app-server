@@ -6,9 +6,9 @@ import nativeUsage from './CodexACPAgent/data/native-token-usage-20260910.json';
 
 it.each(['materialize', 'complete', 'cancel'])('preserves child usage through buffered output and %s', async ending => {
     const notify = vi.fn().mockResolvedValue(undefined);
-    const router = new CodexSubagentEventRouter('parent', true, new ACPSessionConnection({notify, request: vi.fn()}, 'parent'), () => {});
+    const router = new CodexSubagentEventRouter('parent', true, new ACPSessionConnection({notify, request: vi.fn()}, 'parent'), () => {}, () => null);
     const turn: Turn = {
-        id: 'child-turn', items: [], itemsView: 'full', status: 'inProgress', error: null,
+        id: 'child-turn', items: [], itemsView: 'full', rootTurnId: null, status: 'inProgress', error: null,
         startedAt: null, completedAt: null, durationMs: null,
     };
     await router.handle({
@@ -40,7 +40,7 @@ it.each(['materialize', 'complete', 'cancel'])('preserves child usage through bu
             method: 'item/started',
             params: {
                 threadId: 'parent', turnId: 'parent-turn', startedAtMs: 0,
-                item: {type: 'subAgentActivity', id: 'activity', kind: 'started', agentThreadId: 'child', agentPath: '/root/usage'},
+                item: {type: 'subAgentActivity', id: 'activity', kind: 'started', model: null, reasoningEffort: null, agentThreadId: 'child', agentPath: '/root/usage'},
             },
         });
     } else if (ending === 'complete') {

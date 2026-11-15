@@ -28,6 +28,7 @@ It describes only this adapter.
 - [Context compaction](#context-compaction)
 - [Session fork point](#session-fork-point)
 - [Presentation hints](#presentation-hints)
+- [Predicted follow-up prompt](#predicted-follow-up-prompt)
 - [Removed keys](#removed-keys)
 
 ## Purpose and scope
@@ -58,7 +59,8 @@ Only these differences are allowed:
   After a cancelled or failed permission request, the next update carries every field again.
   ACP defines no merge for `_meta` keys, so the `_meta` of each report keeps every key that the adapter sent before.
 - Bug fixes: a unique MCP startup tool call id, the result of a dynamic tool in `content`,
-  no output after a tool call ended, and a terminal status for a replayed image generation.
+  no output after a tool call ended, a terminal status for a replayed image generation,
+  and the command as the title of a command approval.
 - Feature changes for every client: the `/mcp` command has a new description and an input hint.
 - The client gets no AIR-only key.
   That is no `_meta.jetbrains.air` key and none of the earlier keys in [Removed keys](#removed-keys).
@@ -145,9 +147,9 @@ The `initialize` response carries the agent side of the extension only when the 
 
 The agent list does not depend on the client capability list, except for `sessionIndex`.
 The agent lists `sessionIndex` only when the client declared it, because AIR builds without it use
-`session/list` and `session/delete` the old way. Exactly then it also lists `sessionArchive`, `sessionRename` and
-`sessionListSubscribe`, which name requests of the session index; the client does not declare those three, and
-declaring them without `sessionIndex` enables nothing.
+`session/list` and `session/delete` the old way. Exactly then it also lists `sessionArchive`, `sessionRename`,
+`sessionBatchGet`, `sessionListSubscribe` and `sessionWorktrees`, which name requests and row fields of the session index; the client
+does not declare those five, and declaring them without `sessionIndex` enables nothing.
 An extension is active only when the client declared its capability.
 A client that is not AIR gets no `jetbrains` key and no `goal` key in the `initialize` response.
 
@@ -166,13 +168,15 @@ A client that is not AIR gets no `jetbrains` key and no `goal` key in the `initi
 | `codexHooks` | Lets AIR review and trust startup hooks before it opens a session. | [Hook trust](#hook-trust) |
 | `sessionIndex` | Serves `session/list` as the session index of AIR, as the ACP session list extensions RFD and RFD #2161 describe, adds rename and archive requests, and pushes the changed rows of a cwd to a subscription. | [Session index](#session-index) |
 
-Three agent capabilities come with `sessionIndex` and are listed exactly when it is. The client does not declare them:
+Five agent capabilities come with `sessionIndex` and are listed exactly when it is. The client does not declare them:
 
 | Agent capability | What it tells the client | Section |
 | --- | --- | --- |
+| `sessionBatchGet` | Reads metadata for known session IDs with `_session/batch_get`. | [Batch get](#batch-get) |
 | `sessionArchive` | The agent serves `_session/archive` and `_session/unarchive`. | [Requests](#requests) |
 | `sessionRename` | The agent serves `_session/rename`. | [Requests](#requests) |
 | `sessionListSubscribe` | The agent serves `_session/list/subscribe` and `_session/list/unsubscribe` and sends `_session/list/changes`. | [Session list subscription](#session-list-subscription) |
+| `sessionWorktrees` | A list row of a thread in a linked Git worktree that Codex made carries `agentWorktree: true`. | [Agent worktrees](#agent-worktrees) |
 
 The goal extension has no client capability.
 The agent advertises the `goal` object, and the client uses the control method when it wants to.
@@ -241,9 +245,21 @@ The adapter keeps them where they are.
 | `mcp_output_delta` | tool call `_meta.mcp_output_delta = {data}` | MCP progress text to append, trimmed. AIR does not get it. |
 | `is_mcp_tool_call` | tool call `_meta.is_mcp_tool_call: true` | The tool call is an MCP tool call. |
 | `is_mcp_tool_approval` | `session/request_permission` request `_meta.is_mcp_tool_approval: true` | The permission request approves an MCP tool call. |
-| `steering` | `initialize` response `_meta.steering = {supported: true}` | The agent accepts `_session/steering` for a running turn. |
+| `steering` | `initialize` response `_meta.steering = {supported: true}` | The agent accepts `_session/steering` for a running turn; see [session steering](steering.md). |
 | `quota` | `PromptResponse._meta.quota` | Token usage of the whole turn, the same counts as `PromptResponse.usage`: `token_count` and one `model_usage` entry for the current model, or `null` and `[]` when Codex reported no usage for the prompt, as for a prompt that started no turn. |
 | `authStatus` | `initialize` response `agentCapabilities._meta.authStatus` | The agent pushes `_auth/status_update`. The object carries no payload. |
+
+## Auth source display
+
+The agent-owned provider ID comes from `getAgentConfiguredModelProvider()`: launch options take priority over the effective app-server `configRead`, and client-owned `providers/set` routing is ignored for identity reporting.
+
+An active `model_provider` ID equal to `wire` after trimming whitespace and ignoring case is displayed as:
+
+```json
+{ "authStatus": { "kind": "gateway", "label": "JetBrains Air Gateway" } }
+```
+
+The configured friendly `name`, URL, host and route are not checked. An unused provider or another ID whose friendly name is `wire` does not match. This is a weak display heuristic, not proof of configuration provenance or access rights. This payload omits `detail` and `account` and contains no keys, headers or private routes. Both the initial push and subsequent status publication use the same classification and existing duplicate suppression. Other providers and gateway authentication names retain their previous presentation.
 
 ## Zed conventions
 
@@ -344,7 +360,7 @@ The other clients get the same fields as before the AIR extensions.
 | Turn plan (`turn/plan/updated`) | standard `plan` with entries | The same. |
 | `contextCompaction` | `compaction_update` when the client declares `session.compaction`. Otherwise a synthetic tool call with `_meta.jetbrains.air.contextCompaction`. | The same, without `_meta`. |
 | `agentMessage` | `agent_message_chunk` with `_meta.jetbrains.air.phase` when Codex reports a phase. | No `_meta`. |
-| Command, file change, or sandbox permission request | See [Tool call of the request](#tool-call-of-the-request). | `kind`, `status: pending`, and a generic title such as `Run command` or `Edit files`, also for a started tool call. No `_meta`. |
+| Command, file change, or sandbox permission request | See [Tool call of the request](#tool-call-of-the-request). | `kind`, `status: pending`, and a title, also for a started tool call. Command approvals keep the started title or show the command; other requests use a generic title or a network title. No `_meta`. |
 | `imageView`, fuzzy search, MCP startup | standard shape. A fuzzy search that finds no file sends `locations: []`. | The same. |
 
 ## Diff patch
@@ -527,7 +543,10 @@ The `toolCall` is an ACP `ToolCallUpdate`. The client merges it into the stored 
   A client without `rawInputRendering` also gets it as text in `content`.
 
 A client that is not AIR gets the request tool call of the adapter before the AIR extensions.
-It always carries `kind` and `status: pending`, and a generic title such as `Run command`, `Edit files`, or a network title.
+It always carries `kind` and `status: pending`. A started command keeps its title, including a parsed read, search, or list title.
+An approval without a start uses the command without its shell wrapper as the title, so Zed keeps the command visible.
+When Codex supplies no command, the title describes the parsed action or falls back to `Run command`.
+File changes and network approvals keep their generic or network titles.
 Its `locations` hold every path of the Codex command actions.
 
 Command approvals use `kind: execute`. File changes use `kind: edit`.
@@ -994,8 +1013,9 @@ This section covers only the AIR bridge.
 
 AIR uses `session/list` as its index of Codex threads when it declares `sessionIndex`.
 Everything in this section applies only to such a client. The `initialize` answer to it lists `sessionIndex`,
-`sessionArchive`, `sessionRename` and `sessionListSubscribe` in `_meta.jetbrains.air.capabilities`.
+`sessionBatchGet`, `sessionArchive`, `sessionRename`, `sessionListSubscribe` and `sessionWorktrees` in `_meta.jetbrains.air.capabilities`.
 Another client, AIR included, keeps the old `session/list`, `session/delete` and `initialize` answers.
+ACP v1 and v2 connections get the same session index.
 
 The extension follows two ACP RFDs field for field: the session list extensions RFD (`limit`, order, row fields)
 and [RFD #2161](https://github.com/agentclientprotocol/agent-client-protocol/pull/2161)
@@ -1075,11 +1095,49 @@ Every row carries these fields in `_meta.jetbrains.air`; all but `archived` only
 | `archived` | `true` for a thread from the archived Codex list, `false` otherwise, whatever the `archived` filter. Always present. |
 | `lastPromptAt` | ISO time of `Thread.recencyAt`: Codex moves it when a turn starts and orders threads by it. |
 | `model` | `Thread.model`. |
-| `forkedFrom` | The thread it was forked from: `Thread.forkedFromId` when Codex gives it, which `thread/read` does and `thread/list` does not. Otherwise `payload.forked_from_id` of the first line of the rollout at `Thread.path`, `session_meta`, which the adapter reads in the background, once per thread, so a list never waits for it: the first row of a fork can come without `forkedFrom`. A subscription that runs when the read ends gets the row again; otherwise the next `session/list` has it. |
+| `forkedFrom` | The thread it was forked from: `Thread.forkedFromId` when Codex gives it, which `thread/read` does and `thread/list` does not. Otherwise the adapter asks `thread/read` without turns in the background, so a list never waits for it: the first row of a fork can come without `forkedFrom`. A found parent is kept for the thread's life. Codex can answer from its state DB without the rollout and then gives no parent, so a thread without one is read again once its `updatedAt` changes. A subscription that runs when the read ends gets the row again; otherwise the next `session/list` has it. |
 | `state` | Only for a thread that this adapter has loaded, see [Row state](#row-state): `requires_action`, `reviewing`, `running`, `error` or `idle`. Omitted otherwise, never `unknown`. |
 | `lastTurnEndedAt` | ISO time of the last `turn/completed` that this adapter saw for a session of this connection. Forgotten when the thread is deleted. |
+| `agentWorktree` | `true` when the cwd of the thread lies in a linked Git worktree that Codex made, see [Agent worktrees](#agent-worktrees). Omitted otherwise, never `false`. |
 
 The adapter sends no `cost`: Codex reports none.
+
+#### Agent worktrees
+
+A row whose `Thread.cwd` is the root of a linked Git worktree, or a directory in it, carries
+`agentWorktree: true` when Codex made that worktree:
+
+```json
+{ "sessionId": "…", "cwd": "/repo-worktrees/fix-login/src", "title": "…", "updatedAt": "…", "_meta": { "jetbrains": { "air": { "version": 1, "archived": false, "agentWorktree": true } } } }
+```
+
+- Codex made a worktree when its own Git directory, `<main>/.git/worktrees/<name>/`, holds the regular file
+  `codex-thread.json`, which Codex writes there as `{"version":1,"ownerThreadId":"<thread id>"}`. A link to a
+  regular file counts too.
+- Only the existence of the file counts, not `ownerThreadId`: several threads can work in one Codex worktree, and
+  each of their rows is marked.
+- The rule gives the same answer as AIR's native Codex provider (`codexMadeWorktreeDirectoryOf`), step by step:
+  - The nearest `.git` entry at or above the cwd decides. A `.git` directory, with or without `HEAD`, is a main
+    worktree, which is never marked; a `.git` file, or a link to one, is read as `gitdir: <main>/.git/worktrees/<name>`;
+    any other entry, such as a broken link, marks nothing.
+  - The common Git directory is what the `commondir` file of that Git directory names, or `<gitdir>/../..` without
+    the file. It must be a directory named `.git`: the worktrees of a bare repository are not marked.
+  - The worktrees Codex made are the parents of the `.git` files that the `gitdir` files of the marked Git directories
+    of `<main>/.git/worktrees/` name, when they are directories. A row is marked when its cwd is one of them or a path
+    below one, compared by whole names, ignoring case on Windows. So a worktree whose `gitdir` file names another
+    directory marks only the rows under that directory.
+  - Paths are normalized but not resolved to their real path, so the cwd is matched as Codex stored it, the string
+    that AIR matches too. A cwd that reaches the worktree through a symbolic link is not marked; a cwd below the
+    worktree that no longer exists is.
+- The adapter reads the Git administrative files and never runs Git. Like AIR, it keeps what it read for a minute:
+  the main worktree per cwd and the worktrees Codex made per main worktree.
+- A `codex-thread.json` written after a row went out shows with the next change of that thread or the next list read,
+  once the minute has passed; the file alone sends no `_session/list/changes`.
+- A `session/list` without an absolute `cwd` does not mark rows whose cwd is a UNC path, such as
+  `\\wsl.localhost\…`, so that a list of every thread does not read each network share. AIR's native rule has no
+  such exception.
+- `cwd` stays `Thread.cwd`. The mark does not depend on `includeWorktrees`: a list of the worktree's own cwd marks
+  its rows too. `_session/list/changes` rows carry it, as they are the rows of the list.
 
 #### Row state
 
@@ -1138,6 +1196,74 @@ A thread that is not loaded here has no `state`. A change of `state` is a row ch
   archiving the thread: old AIR builds send `session/delete` for "Done". Threads they closed that way show as
   archived to a `sessionIndex` client.
 
+### Batch get
+
+`_session/batch_get` refreshes known session IDs, such as pinned sessions and folder
+members outside the recent list page. Check for `sessionBatchGet` in
+`initialize.result._meta.jetbrains.air.capabilities` before calling it.
+
+The params object contains only `sessionIds`: an array of distinct, non-blank
+strings. IDs match exactly, without trimming or case normalization. Malformed
+params, duplicates or extra fields return `Invalid params` (`-32602`). The
+adapter sets no limit on the number of IDs; the client chooses the batch size
+for the latency it accepts. Archived sessions and sessions in other projects
+or worktrees are eligible; the client applies display filters.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "_session/batch_get",
+  "params": { "sessionIds": ["oldA", "oldB", "oldC"] }
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "sessions": [
+      {
+        "sessionId": "oldA",
+        "cwd": "/project",
+        "title": "Fix the build",
+        "updatedAt": "2026-01-01T00:00:00.000Z",
+        "_meta": { "jetbrains": { "air": { "version": 1, "archived": false } } }
+      }
+    ]
+  }
+}
+```
+
+The example IDs stand for Codex thread IDs. `sessions` contains full
+`session/list` rows in relative request order. Absent, unreadable and
+ID-mismatched records are omitted, and so are threads that `session/list` does
+not show: ephemeral threads, threads from a source other than the CLI or an IDE
+extension (such as `exec` or a subagent), threads without a first user message
+and threads without a stored rollout. Merge returned rows with the recent page by
+`sessionId`; an omitted ID need not remove its pinned or folder reference.
+
+`{ "sessionIds": [] }` returns `{ "sessions": [] }` without reading the store.
+Failed metadata reads omit the corresponding rows. Connection loss, process
+exit and the app-server's structured `serverShuttingDown` error reject the
+request. Native storage errors do not reliably distinguish one unreadable record
+from a wider storage failure, so a database or discovery failure can also produce
+an empty or partial result.
+
+Rows use the same builder as an unscoped `session/list`, including archive,
+worktree and activity metadata. Codex selects the stored copy. The adapter calls
+`thread/read` with `includeTurns: false` for each ID, at most 8 at a time,
+without loading or resuming sessions, paging through `thread/list`, or
+requesting turn history. A batch read does not subscribe to changes or expand
+an existing subscription's scope.
+
+Codex can internally fall back to recursive filesystem discovery for unknown or
+unindexed IDs and read legacy rollout metadata, so lookup latency can depend on
+total stored history. Native legacy `thread/read` can also return a
+creation-based `updatedAt` where `thread/list` reports the stored update time;
+exact timestamp equality is not guaranteed.
+
 ### Session list subscription
 
 The client subscribes to the rows of a cwd and the agent pushes the rows that change. It is best effort: the client
@@ -1159,16 +1285,19 @@ still re-reads the list now and then, and a lost change shows up there.
   The agent resolves the worktrees of a subscription again every 10 s, and at most once a second for a changed
   thread whose cwd is not in its scope. A thread of a worktree created less than a second before its change can
   show only with its next change.
+- There is no page or recent-session limit: changes to older pinned or folder sessions within that scope
+  are reported even outside the page AIR loaded. Pinned IDs outside the subscribed project and worktrees
+  are not tracked; `_session/batch_get` does not expand the scope. Subscribe to their project or refresh explicitly.
 - `_session/list/changes` carries, for each thread in scope that appeared or changed, its whole row exactly as
   `session/list` answers it. A row counts as changed when `title`, `lastPromptAt`, `state`, `lastTurnEndedAt`,
-  `model`, `forkedFrom` or `archived` differs from the row the subscription last got. A change of `updatedAt` alone
-  sends nothing; the new `updatedAt` comes with the next change. Archive and unarchive are row changes.
+  `model`, `forkedFrom`, `archived` or `agentWorktree` differs from the row the subscription last got. A change of
+  `updatedAt` alone sends nothing; the new `updatedAt` comes with the next change. Archive and unarchive are row changes.
   `removed` lists the ids of deleted threads, to every subscription whose scope has the cwd of the thread. A
   deleted thread whose cwd the agent does not know is listed to every subscription; a client ignores an id it does
   not have. Both arrays are always present, and one
   of them is not empty.
 - Subscribing reads no rows: the agent only notes the newest `updatedAt` of the threads, with one small
-  `thread/list` per archive state for the first subscription of the connection. After subscribing, the first
+  `thread/list` of the unarchived threads for the first subscription of the connection. After subscribing, the first
   change of each session is sent in full even if only `updatedAt` changed; later changes of it are compared with
   the row sent last. A thread whose `updatedAt` is no later than when the subscription started counts as
   unchanged for a scan, so its first change after subscribing within that same second can show only with its
@@ -1193,15 +1322,16 @@ How the agent sees changes:
   `<CODEX_HOME>/state_<n>.sqlite-wal`. The agent watches the WAL files and CODEX_HOME for WAL files that appear or
   go, and checks the WAL size and time every 30 s in case the file system drops an event. 150 ms after the last
   write, and at most 1 s after the first, it sends one `thread/list` without `cwd`, with `sortKey: "updated_at"`,
-  for unarchived threads and one for archived threads, and reads newest first until the threads are older than
-  the newest one it saw before. Threads of the same second as that one are read again. A scan reads at most
-  920 threads per archive state; one that stops there goes on where it stopped with the next scan, 150 ms later,
+  for unarchived threads, and reads newest first until the threads are older than the newest one it saw before.
+  Threads of the same second as that one are read again. It lists no archived threads: an archived thread does
+  not run. A scan reads at most 920 threads; one that stops there goes on where it stopped with the next scan, 150 ms later,
   and the newest one it saw counts only once it reached the old one; a scan from the top follows when a write came
   meanwhile.
 - A rename moves no `updated_at`. The agent watches `<CODEX_HOME>/session_index.jsonl`, to which any process
   appends its renames, reads what was appended with the next scan, and reads those threads with `thread/read`. Archive moves no `updated_at`
   either: the agent watches `<CODEX_HOME>/archived_sessions/` and reads each thread whose rollout appears or goes
-  there.
+  there. When it starts that watch after the directory appeared or came back, it lists the file names there and reads
+  each thread, at most 256, whose rollout came or went before the watch started.
 - A thread that another process deletes is not seen unless it was archived. Clients re-read the list now and then
   for what the agent misses.
 
@@ -1211,6 +1341,7 @@ The names and the semantics are the RFDs'. The transport differs:
 
 | Extension | RFD |
 | --- | --- |
+| capability `sessionBatchGet`, `_session/batch_get` | none |
 | capability `sessionIndex` in `_meta.jetbrains.air.capabilities` | `sessionCapabilities.list.limit` |
 | agent capability `sessionArchive` | agent capability `archive` (#2161): `sessionCapabilities.archive`, `capabilities.session.archive` in v2 |
 | agent capability `sessionRename` | the rename capability of RFD #1987, which it spells `sessionCapabilities.setTitle` |
@@ -1221,6 +1352,7 @@ The names and the semantics are the RFDs'. The transport differs:
 | `SessionInfo._meta.jetbrains.air.lastPromptAt` = `Thread.recencyAt`, the order key | `SessionInfo.lastPromptAt`; the list order `lastPromptAt ?? updatedAt` |
 | `SessionInfo._meta.jetbrains.air.{model, forkedFrom, state, lastTurnEndedAt}` | the `SessionInfo` fields of the same names |
 | `SessionInfo._meta.jetbrains.air.archived` | `SessionInfo.archived` (#2161) |
+| agent capability `sessionWorktrees`; `SessionInfo._meta.jetbrains.air.agentWorktree` | `SessionInfo.agentWorktree` and the agent capability marker `agentWorktrees`, as proposed for the session list extensions RFD in [#2323](https://github.com/agentclientprotocol/agent-client-protocol/pull/2323), not merged yet |
 | `session_info_update._meta.jetbrains.air.archived` | `SessionInfoUpdate.archived` (#2161) |
 | `_session/archive`, `_session/unarchive` | `session/archive`, `session/unarchive` (#2161) |
 | `_session/rename` | `session/set_title`, client-set titles (#1987) |
@@ -1287,6 +1419,27 @@ The adapter sends these keys only to AIR:
 - A `$skill` command carries `_meta.jetbrains.air.skillPath`, the absolute path of its `SKILL.md` from `skills/list`.
   The path is an OS-native absolute path, such as `C:\repo\SKILL.md` on Windows. It is not a URI.
   AIR opens this file on a click on the skill chip.
+
+## Predicted follow-up prompt
+
+After a turn ends normally, the adapter sends AIR the prompt the user is most likely to send next:
+
+```json
+{"sessionUpdate": "session_info_update", "_meta": {"promptSuggestions": {"suggestions": [{"text": "Run the tests"}]}}}
+```
+
+- The key is `_meta.promptSuggestions` on the session info update, not under `jetbrains.air`. Only AIR gets it.
+- AIR shows the first non-blank `suggestions[].text` as gray text in an empty composer. Tab fills the composer without sending.
+- `suggestions: []` clears the prompt the client holds. The adapter sends it when a new prompt starts and when the new prediction is empty.
+  The adapter does not repeat a value it already sent.
+- The adapter calls the experimental `thread/sample` on the session's own thread, one extra model call per turn.
+  It produces one response on an ephemeral fork that inherits the session's model, configuration and conversation, so most of the context comes from the prompt cache.
+  Tools never run during the sample. The adapter requests `high` reasoning effort, but Codex applies it only for OpenAI providers on models that support effort overrides. Otherwise the session's own effort is used.
+  The prompt asks for one line of at most 240 characters, or nothing.
+  The prediction arrives after the prompt response. A prompt that starts first drops it.
+- There is no prediction in plan mode.
+- A turn that is cancelled or fails produces no prediction.
+- `CODEX_ACP_PROMPT_SUGGESTIONS=false` turns the feature off.
 
 ## Removed keys
 

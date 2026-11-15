@@ -32,7 +32,7 @@ function turnStarted(threadId: string, turnId = 'turn-id'): ServerNotification {
         method: 'turn/started',
         params: {
             threadId,
-            turn: { id: turnId, items: [], itemsView: 'full', status: 'inProgress', error: null, startedAt: null, completedAt: null, durationMs: null },
+            turn: { id: turnId, items: [], itemsView: 'full', rootTurnId: null, status: 'inProgress', error: null, startedAt: null, completedAt: null, durationMs: null },
         },
     };
 }
@@ -605,6 +605,8 @@ describe('Token Usage Events', () => {
                 startedAtMs: 0,
                 item: {
                     type: 'subAgentActivity',
+                    model: null,
+                    reasoningEffort: null,
                     id: 'activity-started',
                     kind: 'started',
                     agentThreadId: childThreadId,
@@ -620,6 +622,7 @@ describe('Token Usage Events', () => {
                 turn: {
                     id: 'child-turn-id',
                     items: [],
+                    rootTurnId: null,
                     itemsView: 'notLoaded',
                     status: 'completed',
                     error: null,
@@ -644,6 +647,7 @@ describe('Token Usage Events', () => {
                 true,
                 new ACPSessionConnection(mockFixture.getAcpConnection(), sessionId),
                 () => {},
+                () => ({currentModel: null, availableModels: []}),
             );
             mockFixture.getCodexAppServerClient().turnStart = vi.fn().mockResolvedValue({
                 turn: { id: 'turn-id', items: [], status: 'inProgress', error: null },
@@ -701,12 +705,12 @@ it('accounts for native child calls separately from the parent context and promp
     const notify = vi.fn().mockResolvedValue(undefined);
     const connection = {notify, request: vi.fn()};
     const state = createTestSessionState({sessionId: 'parent'});
-    state.subagents = new CodexSubagentEventRouter('parent', false, new ACPSessionConnection(connection, 'parent'), () => {});
+    state.subagents = new CodexSubagentEventRouter('parent', false, new ACPSessionConnection(connection, 'parent'), () => {}, () => null);
     const handler = createTestEventHandler(connection, state);
     const first = nativeUsage[0]!;
     await handler.handleNotification({
         method: 'turn/started',
-        params: {threadId: 'child', turn: {id: 'turn-id', status: 'inProgress', items: [], error: null, itemsView: 'full', startedAt: null, completedAt: null, durationMs: null}},
+        params: {threadId: 'child', turn: {id: 'turn-id', status: 'inProgress', items: [], error: null, itemsView: 'full', rootTurnId: null, startedAt: null, completedAt: null, durationMs: null}},
     });
     const event = createTokenUsageNotification('child', first);
     await handler.handleNotification(event);

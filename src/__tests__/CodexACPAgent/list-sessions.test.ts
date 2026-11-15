@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import { createCodexMockTestFixture } from "../acp-test-utils";
 import type { Thread } from "../../app-server/v2";
 
@@ -93,7 +93,6 @@ describe("CodexACPAgent - list sessions", () => {
             sourceKinds: [
                 "cli",
                 "vscode",
-                "exec",
                 "appServer",
                 "unknown",
             ],
@@ -252,7 +251,7 @@ describe("CodexACPAgent - list sessions", () => {
         vi.spyOn(codexAcpClient, "readAuthRequirement").mockResolvedValue({required: false, account: null});
         vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({
             account: null,
-            requiresOpenaiAuth: false,
+            requiresOpenaiAuth: false, userId: null,
         });
         vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
             sessionId: "sess-1",

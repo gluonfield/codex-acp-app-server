@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import {createCodexMockTestFixture, createTestModel} from "../acp-test-utils";
 import type {Thread} from "../../app-server/v2";
 
@@ -58,7 +58,7 @@ function createFixture() {
     const client = fixture.getCodexAcpClient();
     const appServer = fixture.getCodexAppServerClient();
     client.readAuthRequirement = vi.fn().mockResolvedValue({required: false, account: null});
-    client.getAccount = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: false});
+    client.getAccount = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: false, userId: null});
     client.listSkills = vi.fn().mockResolvedValue({data: []});
     appServer.listModels = vi.fn().mockResolvedValue({data: [createTestModel()], nextCursor: null});
     appServer.threadRead = vi.fn();

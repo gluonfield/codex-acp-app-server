@@ -14,13 +14,14 @@ import fs from "node:fs";
 import os from "node:os";
 import {AgentMode} from "../AgentMode";
 import {DEFAULT_COLLABORATION_MODE} from "../CollaborationModeConfig";
-import {expect, vi} from "vitest";
+import {afterEach, beforeEach, expect, vi} from "vitest";
 import type {Model, ReasoningEffortOption} from "../app-server/v2";
 import {CodexSubagentEventRouter} from "../subagents/CodexSubagentEventRouter";
 import {CodexEventHandler} from "../CodexEventHandler";
 import type {AccountUpdatedNotification} from "../app-server/v2";
 import {CodexBackgroundTerminalTasks} from "../async-tasks/CodexBackgroundTerminalTasks";
 import {CodexSessionCompactions} from "../CodexSessionCompactions";
+import {CodexSessionToolCalls} from "../CodexSessionToolCalls";
 import {AUTH_STATUS_UPDATE_METHOD} from "../AuthStatusMeta";
 import {ClientCapabilities} from "../tool-calls/ClientCapabilities";
 
@@ -191,7 +192,14 @@ export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
  * Use for integration tests that need to interact with the actual Codex binary.
  */
 export function createTestFixture(): TestFixture {
-    const pathToCodex = path.resolve(process.cwd(), "node_modules", ".bin", process.platform === 'win32' ? "codex.cmd" : "codex");
+    const bundledCodexPath = path.resolve(
+        process.cwd(),
+        "node_modules",
+        ".bin",
+        process.platform === 'win32' ? "codex.cmd" : "codex",
+    );
+    const pathToCodex = process.env["CODEX_PATH"] ?? bundledCodexPath;
+
     if (!fs.existsSync(pathToCodex)) {
         throw new Error(`Codex binary not found at ${pathToCodex}. Did you run 'npm install'?`);
     }
@@ -267,6 +275,8 @@ export interface CodexMockTestFixture extends TestFixture {
     sendServerRequest<T>(method: string, params: unknown): Promise<T>,
     setPermissionResponse(response: RequestPermissionResponse | Promise<RequestPermissionResponse>): void,
     setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void,
+    /** Raw `options` (e.g. `cancellationSignal`) passed to `connection.request()` calls for the given ACP method. */
+    getAcpRequestOptions(method: string): any[],
 }
 
 /**
@@ -293,7 +303,9 @@ export function createCodexMockTestFixture(
     };
 
     const mockCodexConnection = {
-        sendRequest: () => Promise.resolve(undefined),
+        sendRequest: (method: string) => Promise.resolve(
+            method === "thread/backgroundTerminals/list" ? {data: [], nextCursor: null} : undefined,
+        ),
         onUnhandledNotification: (handler: (notification: any) => void) => {
             unhandledNotificationHandler = handler;
         },
@@ -313,8 +325,12 @@ export function createCodexMockTestFixture(
     // Create ACP connection with configurable permission response
     const acpConnectionEvents: MethodCallEvent[] = [];
     const acpEventHandlers: ((event: MethodCallEvent) => void)[] = [];
+    // Raw `request()` options (e.g. `cancellationSignal`) are stripped by `normalizeAcpConnectionEvent`
+    // before landing in `acpConnectionEvents`; capture them separately so tests can assert on them.
+    const acpRequestOptions: {method: string; options: any}[] = [];
     const returnValues = new Map<string, (args: any[]) => any>();
     returnValues.set('request', (args) => {
+        acpRequestOptions.push({method: args[0], options: args[2]});
         if (args[0] === acp.methods.client.session.requestPermission) {
             return permissionState.response;
         }
@@ -373,6 +389,9 @@ export function createCodexMockTestFixture(
         setElicitationResponse(response: CreateElicitationResponse | Promise<CreateElicitationResponse>): void {
             elicitationState.response = response;
         },
+        getAcpRequestOptions(method: string): any[] {
+            return acpRequestOptions.filter(entry => entry.method === method).map(entry => entry.options);
+        },
     };
 }
 
@@ -413,6 +432,8 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
     const sessionId = overrides?.sessionId ?? "session-id";
     return {
         currentTurnId: null,
+        interruptTurnId: null,
+        codexReportedRunningTurnId: null,
         lastTokenUsage: null,
         promptTokenUsage: new TurnTokenUsage(),
         totalTokenUsage: null,
@@ -430,6 +451,7 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         supportedReasoningEfforts: [],
         supportedInputModalities: ["text", "image"],
         agentMode: AgentMode.DEFAULT_AGENT_MODE,
+        availableAgentModes: AgentMode.all(),
         collaborationMode: DEFAULT_COLLABORATION_MODE,
         fastModeEnabled: false,
         currentModelSupportsFast: false,
@@ -439,11 +461,13 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         sessionTitleSource: "unknown",
         compactions: new CodexSessionCompactions(),
         toolCallReports: new ToolCallReports(),
+        openToolCalls: new CodexSessionToolCalls(),
         subagents: new CodexSubagentEventRouter(
             sessionId,
             false,
             new ACPSessionConnection({notify: vi.fn(), request: vi.fn()} as AcpClientConnection, sessionId),
             () => {},
+            () => ({currentModel: null, availableModels: []}),
         ),
         asyncTasks: new CodexBackgroundTerminalTasks(
             false,
@@ -511,6 +535,7 @@ export function mockPromptTurn(fixture: CodexMockTestFixture, sessionId: string)
         turn: {
             id: "turn-id",
             items: [],
+            rootTurnId: null,
             itemsView: "notLoaded",
             status: "inProgress",
             error: null,
@@ -524,6 +549,7 @@ export function mockPromptTurn(fixture: CodexMockTestFixture, sessionId: string)
         turn: {
             id: "turn-id",
             items: [],
+            rootTurnId: null,
             itemsView: "notLoaded",
             status: "completed",
             error: null,
@@ -596,6 +622,19 @@ export function createTestEventHandler(
         false,
         false,
     );
+}
+
+/**
+ * Answers the gateway model listing of every `providers/set` in the file with `modelIds`, so its tests never reach
+ * the network. A failed listing would fail `providers/set`, and an empty one would leave the sessions no model.
+ */
+export function stubGatewayModelListing(modelIds: string[]): void {
+    beforeEach(() => {
+        vi.stubGlobal("fetch", vi.fn(async () => Response.json({object: "list", data: modelIds.map(id => ({id}))})));
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
 }
 
 /** A promise that the test resolves or rejects from outside. */

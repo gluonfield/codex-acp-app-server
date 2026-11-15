@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import {randomUUID} from "node:crypto";
 import {ACPSessionConnection, type AcpClientConnection} from "./ACPSessionConnection";
 import {CodexAcpClient} from "./CodexAcpClient";
@@ -41,6 +41,7 @@ export class CodexTurn {
                 false,
                 new ACPSessionConnection(connection, state.sessionId),
                 () => {},
+                () => null,
             ),
             undefined,
             false,

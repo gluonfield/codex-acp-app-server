@@ -1,0 +1,16 @@
+{
+  "error": {
+    "code": -32603,
+    "message": "Provider unavailable"
+  },
+  "stopReason": "error",
+  "_meta": {
+    "usageId": "turn-1",
+    "quota": {
+      "token_count": null,
+      "model_usage": []
+    }
+  },
+  "state": "idle",
+  "sessionUpdate": "state_update"
+}

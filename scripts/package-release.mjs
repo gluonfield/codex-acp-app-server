@@ -1,6 +1,5 @@
 import {execFileSync} from "node:child_process";
 import {chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync} from "node:fs";
-import {tmpdir} from "node:os";
 import {basename, join, resolve} from "node:path";
 import packageJson from "../package.json" with {type: "json"};
 
@@ -12,7 +11,8 @@ if (!platform || !triple || !adapterPath) {
 const runtime = resolve(`node_modules/@openai/codex-${platform}/vendor/${triple}`);
 const adapter = resolve(adapterPath);
 const output = resolve(outputDir);
-const staging = mkdtempSync(join(tmpdir(), "codex-acp-release-"));
+mkdirSync(output, {recursive: true});
+const staging = mkdtempSync(join(output, ".staging-"));
 const adapterName = platform.startsWith("win32-") ? "codex-acp.exe" : "codex-acp";
 const archive = join(
     output,
@@ -20,7 +20,6 @@ const archive = join(
 );
 
 try {
-    mkdirSync(output, {recursive: true});
     cpSync(adapter, join(staging, adapterName));
     cpSync(runtime, join(staging, "codex-runtime", triple), {recursive: true});
     if (!platform.startsWith("win32-")) {

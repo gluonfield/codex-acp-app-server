@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -122,7 +122,7 @@ async function runInWorkspace(
     const anyClient = client as any;
     const anyAppServer = appServer as any;
     anyClient.readAuthRequirement = vi.fn().mockResolvedValue({required: false, account: null});
-    anyClient.getAccount = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: false});
+    anyClient.getAccount = vi.fn().mockResolvedValue({account: null, requiresOpenaiAuth: false, userId: null});
     anyClient.listSkills = vi.fn().mockResolvedValue({data: []});
     anyClient.newSession = vi.fn().mockResolvedValue({
         sessionId: SESSION_ID,

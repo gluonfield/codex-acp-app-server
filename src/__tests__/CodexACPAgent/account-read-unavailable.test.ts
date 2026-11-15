@@ -13,7 +13,7 @@ import type {GetAccountResponse} from "../../app-server/v2";
 const SESSION_ID = "session-1";
 const SIGNED_IN: GetAccountResponse = {
     account: {type: "chatgpt", email: "user@example.com", planType: "plus"},
-    requiresOpenaiAuth: true,
+    requiresOpenaiAuth: true, userId: null,
 } as GetAccountResponse;
 
 /** The grace time of `session/load`, see `ACCOUNT_READ_LOAD_GRACE_MS`. */
@@ -99,7 +99,7 @@ function fixtureWithSession(): CodexMockTestFixture {
         reasoningEffort: model.defaultReasoningEffort,
     });
     appServer.threadItemsList = vi.fn().mockResolvedValue({
-        data: [{turnId: "turn-1", item: {type: "agentMessage", id: "m-1", text: "history", phase: null, memoryCitation: null, delivery: null, questions: null}}],
+        data: [{turnId: "turn-1", item: {type: "agentMessage", id: "m-1", text: "history", phase: null, moderation: null, memoryCitation: null, delivery: null, questions: null}}],
         nextCursor: null,
         backwardsCursor: null,
     });
@@ -251,7 +251,7 @@ describe("CodexACPAgent - an unavailable account read", () => {
             await initialize(fixture);
 
             await loadAfterGrace(fixture);
-            read.resolve({account: null, requiresOpenaiAuth: true});
+            read.resolve({account: null, requiresOpenaiAuth: true, userId: null});
             await drainScheduledWork();
 
             expect(authStatusUpdates(fixture)).toEqual([NONE_STATUS]);
@@ -333,7 +333,7 @@ describe("CodexACPAgent - an unavailable account read", () => {
 
             secondRead.resolve(SIGNED_IN);
             await drainScheduledWork();
-            firstRead.resolve({account: {type: "apiKey"}, requiresOpenaiAuth: true} as GetAccountResponse);
+            firstRead.resolve({account: {type: "apiKey"}, requiresOpenaiAuth: true, userId: null} as GetAccountResponse);
             await drainScheduledWork();
 
             expect(authStatusUpdates(fixture)).toEqual([SIGNED_IN_STATUS]);

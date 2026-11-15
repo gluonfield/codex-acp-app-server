@@ -1,5 +1,5 @@
 import {describe, expect, it, vi} from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import {
     createCodexMockTestFixture,
     createTestModel,
@@ -38,7 +38,7 @@ describe("Fast mode session config", () => {
         const slowModel = createTestModel({id: "slow-model"});
 
         vi.spyOn(codexAcpClient, "readAuthRequirement").mockResolvedValue({required: false, account: null});
-        vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false});
+        vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false, userId: null});
         vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
             sessionId: "session-id",
             currentModelId: "fast-model[medium]",
@@ -107,7 +107,7 @@ describe("Fast mode session config", () => {
     });
 
     it("omits Fast mode config options for JetBrains 2026.1 IntelliJ clients", async () => {
-        const {response} = await createSession(null, {
+        const {response, fixture, codexAcpAgent} = await createSession(null, {
             name: "JetBrains.WebStorm",
             version: "2026.1.1",
             title: "WebStorm 2026.1.1",
@@ -117,6 +117,9 @@ describe("Fast mode session config", () => {
         });
 
         expect(response.configOptions).toBeUndefined();
+        await codexAcpAgent.setSessionConfigOption({sessionId: response.sessionId, configId: FAST_MODE_CONFIG_ID, value: FAST_MODE_ON});
+        expect(fixture.getAcpConnectionEvents([]).some(event =>
+            event.method === "sessionUpdate" && event.args[0]?.update?.sessionUpdate === "config_option_update")).toBe(false);
     });
 
     it("omits Fast mode config options for JetBrains 2026.1 clients by name", async () => {

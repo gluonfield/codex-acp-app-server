@@ -1,8 +1,9 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import type {AcpClientConnection} from "../ACPSessionConnection";
 import type {CodexAcpClient} from "../CodexAcpClient";
 import {logger} from "../Logger";
 import {sanitizeMcpServerName} from "../McpServerName";
+import {type AcpMcpServer, getMcpServerName} from "../McpServerConfig";
 import {settledWithin} from "../StdUtils";
 import {AcpToolCallRenderer} from "../tool-calls/AcpToolCallRenderer";
 import type {ClientCapabilities} from "../tool-calls/ClientCapabilities";
@@ -50,6 +51,7 @@ export class McpSessionStartup {
         signIn: McpServerSignIn,
         capabilities: () => ClientCapabilities,
         isSessionOpen: (sessionId: string) => boolean,
+        private readonly waitForSessionSetup: (sessionId: string, signal: AbortSignal) => Promise<void> | null = () => null,
     ) {
         this.connection = connection;
         this.codexAcpClient = codexAcpClient;
@@ -66,7 +68,7 @@ export class McpSessionStartup {
      */
     begin(
         sessionId: string,
-        mcpServers: Array<acp.McpServer>,
+        mcpServers: Array<AcpMcpServer>,
         afterVersion: number,
         options: McpSessionStartupOptions,
     ): Promise<void> | null {
@@ -94,6 +96,10 @@ export class McpSessionStartup {
         this.pendingSessions.delete(sessionId);
     }
 
+    dispose(): void {
+        for (const sessionId of this.pendingSessions.keys()) this.close(sessionId);
+    }
+
     isPending(sessionId: string): boolean {
         return this.pendingSessions.has(sessionId);
     }
@@ -118,7 +124,7 @@ export class McpSessionStartup {
 
     private createPendingSession(
         sessionId: string,
-        mcpServers: Array<acp.McpServer>,
+        mcpServers: Array<AcpMcpServer>,
         afterVersion: number,
         skippedServers: Array<string>,
     ): PendingMcpStartupSession {
@@ -143,6 +149,8 @@ export class McpSessionStartup {
 
         try {
             const mcpStartup = await pendingStartup.startup;
+            const setup = this.waitForSessionSetup(sessionId, pendingStartup.abort.signal);
+            if (setup) await setup;
             if (!this.isSessionOpen(sessionId)
                 || this.pendingSessions.get(sessionId) !== pendingStartup) {
                 return;
@@ -202,8 +210,8 @@ export class McpSessionStartup {
     }
 }
 
-export function getRequestedMcpServerNames(mcpServers: Array<acp.McpServer>): Array<string> {
-    return Array.from(new Set(mcpServers.map(server => sanitizeMcpServerName(server.name))));
+export function getRequestedMcpServerNames(mcpServers: Array<AcpMcpServer>): Array<string> {
+    return Array.from(new Set(mcpServers.map(server => sanitizeMcpServerName(getMcpServerName(server)))));
 }
 
 const MCP_STARTUP_AWAIT_TIMEOUT_META_KEY = "mcpStartupAwaitTimeoutMs";

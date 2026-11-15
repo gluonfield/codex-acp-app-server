@@ -142,5 +142,10 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
         with:
-          generate_release_notes: true
+          name: Codex ACP ${{ github.ref_name }}
+          body: |
+            Codex ACP 2.6.0 with Codex CLI 0.169.0.
+
+            Preserves Jaz side conversations, exact provider metadata, native steering, usage accounting, and OAuth credentials.
+          generate_release_notes: false
           files: dist/release/*.tar.gz

@@ -1,0 +1,16 @@
+{
+  "error": {
+    "code": -32000,
+    "message": "Authentication required"
+  },
+  "stopReason": "error",
+  "_meta": {
+    "usageId": "turn-1",
+    "quota": {
+      "token_count": null,
+      "model_usage": []
+    }
+  },
+  "state": "idle",
+  "sessionUpdate": "state_update"
+}

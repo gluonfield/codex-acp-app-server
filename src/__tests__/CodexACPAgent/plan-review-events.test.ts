@@ -1,7 +1,8 @@
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import {PLAN_COLLABORATION_MODE} from "../../CollaborationModeConfig";
 import {ClientCapabilities} from "../../tool-calls/ClientCapabilities";
+import {SESSION_STEERING_METHOD} from "../../AcpExtensions";
 import {
     createCodexMockTestFixture,
     createTestSessionState,
@@ -14,6 +15,7 @@ type TurnCompletion = {
     turn: {
         id: string;
         items: never[];
+        rootTurnId: null;
         itemsView: "notLoaded";
         status: "completed" | "failed";
         error: null | {
@@ -32,6 +34,7 @@ type TurnStartResponse = {
     turn: {
         id: string;
         items: never[];
+        rootTurnId: null;
         itemsView: "notLoaded";
         status: "inProgress";
         error: null;
@@ -86,6 +89,7 @@ describe("CodexACPAgent - plan review", () => {
                 turn: {
                     id: "plan-turn",
                     items: [],
+                    rootTurnId: null,
                     itemsView: "notLoaded",
                     status: "inProgress",
                     error: null,
@@ -98,6 +102,7 @@ describe("CodexACPAgent - plan review", () => {
                 turn: {
                     id: "implementation-turn",
                     items: [],
+                    rootTurnId: null,
                     itemsView: "notLoaded",
                     status: "inProgress",
                     error: null,
@@ -144,6 +149,7 @@ describe("CodexACPAgent - plan review", () => {
             turn: {
                 id: "plan-turn",
                 items: [],
+                rootTurnId: null,
                 itemsView: "notLoaded",
                 status: "completed",
                 error: null,
@@ -159,6 +165,43 @@ describe("CodexACPAgent - plan review", () => {
 
         return {promptPromise, sessionState, turnStart, implementationTurn};
     }
+
+    it.each(["revise", "cancel"])("returns host-owned steering immediately during plan approval, allowing %s", async (action) => {
+        const permission = deferred<acp.RequestPermissionResponse>();
+        const {promptPromise, turnStart} = await startPlanPrompt(null, {
+            permissionResponse: permission.promise,
+            emitCompletionNotification: true,
+        });
+        await vi.waitFor(() => expect(fixture.getAcpConnectionEvents([])
+            .some(event => event.method === "requestPermission")).toBe(true));
+        // The plan turn has finished, but its prompt still owns the approval.
+        // Codex rejects steering even if the adapter's cached turn id remains.
+        vi.spyOn(fixture.getCodexAppServerClient(), "turnSteer")
+            .mockRejectedValue(new Error("no active turn to steer"));
+        let promptFinished = false;
+        void promptPromise.then(() => { promptFinished = true; });
+        try {
+            await expect(fixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
+                sessionId,
+                prompt: [{type: "text", text: "revise this plan"}],
+                _meta: {steering: {idleBehavior: "promptRequired"}},
+            })).resolves.toEqual({outcome: "promptRequired", reason: "noRunningTurn"});
+            expect(promptFinished).toBe(false);
+            expect(turnStart).toHaveBeenCalledTimes(1);
+            if (action === "cancel") {
+                await fixture.getCodexAcpAgent().cancel({sessionId});
+                // Cancelling the completed turn does not answer its pending permission request.
+                permission.resolve({outcome: {outcome: "cancelled"}});
+                await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
+            } else {
+                permission.resolve({outcome: {outcome: "selected", optionId: "revise_plan"}});
+                await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
+            }
+            expect(turnStart).toHaveBeenCalledTimes(1);
+        } finally {
+            permission.resolve({outcome: {outcome: "cancelled"}});
+        }
+    }, 2000);
 
     it("requests plan permission and starts one implementation turn when approved", async () => {
         const {promptPromise, sessionState, turnStart, implementationTurn} = await startPlanPrompt("implement_plan");
@@ -219,6 +262,7 @@ describe("CodexACPAgent - plan review", () => {
             turn: {
                 id: "implementation-turn",
                 items: [],
+                rootTurnId: null,
                 itemsView: "notLoaded",
                 status: "completed",
                 error: null,
@@ -240,6 +284,35 @@ describe("CodexACPAgent - plan review", () => {
         await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
         expect(turnStart).toHaveBeenCalledTimes(1);
         expect(sessionState.collaborationMode).toBe(PLAN_COLLABORATION_MODE);
+    });
+
+    it("ends the prompt as cancelled, not end_turn, when session/cancel arrives during the plan review", async () => {
+        const permission = deferred<acp.RequestPermissionResponse>();
+        const {promptPromise, sessionState, turnStart} = await startPlanPrompt(null, {
+            permissionResponse: permission.promise,
+        });
+        await vi.waitFor(() => {
+            expect(fixture.getAcpConnectionEvents([])).toContainEqual({
+                method: "requestPermission",
+                args: [expect.objectContaining({sessionId})],
+            });
+        });
+
+        // `cancel()` looks the session up in the live `sessions` map, not through the
+        // `getSessionState` mock `startPlanPrompt` relies on.
+        // @ts-expect-error - registering local session state for the cancel path
+        fixture.getCodexAcpAgent().sessions.set(sessionId, sessionState);
+        // The plan turn has already completed, so Codex rejects `turn/interrupt` for its stale
+        // turn id; codex-acp must still end the prompt as cancelled via `cancelRequested`.
+        const turnInterrupt = vi.spyOn(fixture.getCodexAcpClient(), "turnInterrupt")
+            .mockRejectedValue(new Error("no such turn"));
+
+        await fixture.getCodexAcpAgent().cancel({sessionId});
+        expect(turnInterrupt).toHaveBeenCalledWith({threadId: sessionId, turnId: "plan-turn"});
+
+        permission.resolve({outcome: {outcome: "cancelled"}});
+        await expect(promptPromise).resolves.toMatchObject({stopReason: "cancelled"});
+        expect(turnStart).toHaveBeenCalledTimes(1);
     });
 
     it("routes a terminal error during plan approval as a session-scoped failure", async () => {
@@ -337,6 +410,7 @@ describe("CodexACPAgent - plan review", () => {
             turn: {
                 id: "implementation-turn",
                 items: [],
+                rootTurnId: null,
                 itemsView: "notLoaded",
                 status: "completed",
                 error: null,
@@ -384,6 +458,7 @@ describe("CodexACPAgent - plan review", () => {
             turn: {
                 id: "implementation-turn",
                 items: [],
+                rootTurnId: null,
                 itemsView: "notLoaded",
                 status: "failed",
                 error: implementationError,
@@ -445,6 +520,7 @@ describe("CodexACPAgent - plan review", () => {
             turn: {
                 id: "implementation-turn",
                 items: [],
+                rootTurnId: null,
                 itemsView: "notLoaded",
                 status: "inProgress",
                 error: null,
@@ -458,6 +534,7 @@ describe("CodexACPAgent - plan review", () => {
             turn: {
                 id: "implementation-turn",
                 items: [],
+                rootTurnId: null,
                 itemsView: "notLoaded",
                 status: "completed",
                 error: null,

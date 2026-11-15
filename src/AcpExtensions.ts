@@ -5,7 +5,8 @@ import type {
     NewSessionResponse,
     ResumeSessionResponse,
     SessionId,
-} from "@agentclientprotocol/sdk";
+    StopReason,
+} from "@agentclientprotocol/sdk/unstable";
 import {
     GOAL_CONTROL_METHOD,
     LEGACY_GOAL_CONTROL_METHOD,
@@ -123,14 +124,17 @@ export type SessionSteerRequest = {
     sessionId: SessionId;
     prompt: ContentBlock[];
     waitForCompletion?: boolean;
+    _meta?: {
+        steering?: {
+            /** Leave idle input unconsumed so the host can own a normal prompt lifecycle. */
+            idleBehavior?: "promptRequired";
+        };
+    };
 }
 
-export type SessionSteeringResponse = {
-    outcome: "injected" | "startedNewTurn" | "failed";
-    stopReason?: "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
-    /** The AIR metadata of the turn's prompt response, such as the typed failure that ended it. */
-    _meta?: {[key: string]: unknown};
-}
+export type SessionSteeringResponse =
+    | {outcome: "injected" | "startedNewTurn" | "failed"; stopReason?: StopReason; _meta?: {[key: string]: unknown}}
+    | {outcome: "promptRequired", reason: "noRunningTurn"}
 
 export type SessionSteeringExtRequest = {
     method: typeof SESSION_STEERING_METHOD;

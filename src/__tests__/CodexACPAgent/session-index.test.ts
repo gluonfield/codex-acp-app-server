@@ -1,5 +1,5 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,7 +43,7 @@ function createThread(overrides: Partial<Thread> = {}): Thread {
         updatedAt: 200,
         recencyAt: 300,
         status: {type: "notLoaded"},
-        path: null,
+        path: "/codex/sessions/rollout.jsonl",
         cwd: "/repo/project",
         cliVersion: "0.0.0",
         section: null,
@@ -73,16 +73,16 @@ async function createAgent(kind: ClientKind, threads: Thread[] = [createThread()
     return {fixture, agent, client, appServer, threadList, readAuthRequirement};
 }
 
-async function openLocalSession(fixture: CodexMockTestFixture, sessionId: string): Promise<void> {
+async function openLocalSession(fixture: CodexMockTestFixture, sessionId: string, additionalDirectories: string[] = []): Promise<void> {
     const client = fixture.getCodexAcpClient();
-    vi.spyOn(client, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false});
+    vi.spyOn(client, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false, userId: null});
     vi.spyOn(client, "newSession").mockResolvedValue({
         sessionId,
         currentModelId: "model-id[medium]",
         models: [createTestModel()],
         collaborationMode: "default",
         currentServiceTier: null,
-        additionalDirectories: [],
+        additionalDirectories,
     });
     await fixture.getCodexAcpAgent().newSession({cwd: "/repo/project", mcpServers: []});
     fixture.clearAcpConnectionDump();
@@ -92,6 +92,24 @@ function listChanges(fixture: CodexMockTestFixture): any[] {
     return fixture.getAcpConnectionEvents([])
         .filter(event => event.method === "notify" && event.args[0] === SESSION_LIST_CHANGES_METHOD)
         .map(event => event.args[1]);
+}
+
+/** The Git administrative files of a repository at `<root>/repo` and its linked worktrees at `<root>/<name>`. */
+function createGitLayout(root: string, worktreeNames: string[]): {repo: string, worktrees: string[]} {
+    const repo = path.join(root, "repo");
+    fs.mkdirSync(path.join(repo, ".git", "worktrees"), {recursive: true});
+    fs.writeFileSync(path.join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    const worktrees = worktreeNames.map(name => {
+        const worktree = path.join(root, name);
+        const adminDir = path.join(repo, ".git", "worktrees", name);
+        fs.mkdirSync(adminDir);
+        fs.mkdirSync(worktree);
+        fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${adminDir}\n`);
+        fs.writeFileSync(path.join(adminDir, "commondir"), "../..\n");
+        fs.writeFileSync(path.join(adminDir, "gitdir"), `${path.join(worktree, ".git")}\n`);
+        return worktree;
+    });
+    return {repo, worktrees};
 }
 
 afterEach(() => {
@@ -188,6 +206,39 @@ describe("session/list", () => {
 
             expect(threadList.mock.calls.map(call => call[0].cwd)).toEqual([[repo, worktree], repo, repo]);
             expect(response.sessions[0]?.cwd).toBe(worktree);
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+
+    it("marks the rows of threads in a worktree that Codex made", async () => {
+        const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "codex-acp-session-index-")));
+        try {
+            const {repo, worktrees} = createGitLayout(root, ["codex", "user"]);
+            fs.writeFileSync(
+                path.join(repo, ".git", "worktrees", "codex", "codex-thread.json"),
+                `${JSON.stringify({version: 1, ownerThreadId: "codex-root"})}\n`,
+            );
+            const [codexWorktree, userWorktree] = worktrees as [string, string];
+            fs.mkdirSync(path.join(codexWorktree, "pkg"));
+            const threads = [
+                createThread({id: "codex-root", cwd: codexWorktree}),
+                // Another thread in the same worktree: the file names only its first owner.
+                createThread({id: "codex-subdirectory", cwd: path.join(codexWorktree, "pkg")}),
+                createThread({id: "user-worktree", cwd: userWorktree}),
+                createThread({id: "main-checkout", cwd: repo}),
+            ];
+            const {agent} = await createAgent("sessionIndex", threads);
+
+            const response = await agent.listSessions({cwd: repo, _meta: {jetbrains: {air: {list: {includeWorktrees: true}}}}});
+
+            const rows = response.sessions.map(session => ({
+                sessionId: session.sessionId,
+                cwd: path.relative(root, session.cwd).split(path.sep).join("/"),
+                agentWorktree: (session._meta as any)?.jetbrains?.air?.agentWorktree ?? null,
+            }));
+            await expect(`${JSON.stringify(rows, null, 2)}\n`).toMatchFileSnapshot("data/session-index-agent-worktree-rows.json");
+            expect(response.sessions[0]!._meta).toMatchObject({jetbrains: {air: {version: 1, agentWorktree: true}}});
         } finally {
             fs.rmSync(root, {recursive: true, force: true});
         }
@@ -787,33 +838,27 @@ describe("_session/list/subscribe", () => {
         agent.sessionIndex.dispose();
     });
 
-    it("delivers the fork parent read from the rollout, after a first row without it", async () => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-acp-fork-"));
-        try {
-            const parent = "01a0637c-5b99-7242-9064-04545d605fdd";
-            const rollout = path.join(dir, "rollout.jsonl");
-            fs.writeFileSync(rollout, `${JSON.stringify({type: "session_meta", payload: {id: threadId, forked_from_id: parent}})}\n`);
-            // As `thread/list` answers it: no forkedFromId.
-            const listed = createThread({path: rollout});
-            const {fixture, agent, threadList, appServer} = await createAgent("sessionIndex", [listed]);
-            threadList.mockImplementation(async (params) => ({data: params.archived ? [] : [listed], nextCursor: null, backwardsCursor: null}));
-            vi.spyOn(appServer, "threadRead").mockResolvedValue({thread: listed});
-            const {subscriptionId} = await agent.sessionIndex.subscribeList({cwd: "/repo/project"});
+    it("delivers the fork parent that thread/read gives, after a first row without it", async () => {
+        const parent = "01a0637c-5b99-7242-9064-04545d605fdd";
+        // As `thread/list` answers it: no forkedFromId.
+        const listed = createThread({path: "/codex-home/sessions/rollout.jsonl"});
+        const {fixture, agent, threadList, appServer} = await createAgent("sessionIndex", [listed]);
+        threadList.mockImplementation(async (params) => ({data: params.archived ? [] : [listed], nextCursor: null, backwardsCursor: null}));
+        const threadRead = vi.spyOn(appServer, "threadRead").mockResolvedValue({thread: {...listed, forkedFromId: parent}});
+        const {subscriptionId} = await agent.sessionIndex.subscribeList({cwd: "/repo/project"});
 
-            const first = await agent.listSessions({cwd: "/repo/project"});
-            expect((first.sessions[0]!._meta as any).jetbrains.air.forkedFrom).toBeUndefined();
+        const first = await agent.listSessions({cwd: "/repo/project"});
+        expect((first.sessions[0]!._meta as any).jetbrains.air.forkedFrom).toBeUndefined();
 
-            await vi.waitFor(() => expect(listChanges(fixture)).toEqual([{
-                subscriptionId,
-                sessions: [expect.objectContaining({sessionId: threadId, _meta: {jetbrains: {air: expect.objectContaining({forkedFrom: parent})}}})],
-                removed: [],
-            }]));
-            const page = await agent.listSessions({cwd: "/repo/project"});
-            expect(page.sessions[0]!._meta).toMatchObject({jetbrains: {air: {forkedFrom: parent}}});
-            agent.sessionIndex.dispose();
-        } finally {
-            fs.rmSync(dir, {recursive: true, force: true});
-        }
+        await vi.waitFor(() => expect(listChanges(fixture)).toEqual([{
+            subscriptionId,
+            sessions: [expect.objectContaining({sessionId: threadId, _meta: {jetbrains: {air: expect.objectContaining({forkedFrom: parent})}}})],
+            removed: [],
+        }]));
+        const page = await agent.listSessions({cwd: "/repo/project"});
+        expect(page.sessions[0]!._meta).toMatchObject({jetbrains: {air: {forkedFrom: parent}}});
+        expect(threadRead).toHaveBeenCalledWith({threadId, includeTurns: false});
+        agent.sessionIndex.dispose();
     });
 
     it("covers the canonical path of a cwd outside a Git checkout", async () => {
@@ -834,6 +879,31 @@ describe("_session/list/subscribe", () => {
             fs.rmSync(link);
         } finally {
             fs.rmSync(dir, {recursive: true, force: true});
+        }
+    });
+
+    it("marks a changed row of a thread in a worktree that Codex made", async () => {
+        const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "codex-acp-scope-")));
+        try {
+            const {repo, worktrees} = createGitLayout(root, ["codex"]);
+            fs.writeFileSync(path.join(repo, ".git", "worktrees", "codex", "codex-thread.json"), `${JSON.stringify({version: 1, ownerThreadId: threadId})}\n`);
+            vi.useFakeTimers();
+            const {fixture, agent, appServer} = await createAgent("sessionIndex");
+            const {subscriptionId} = await agent.sessionIndex.subscribeList({cwd: repo});
+            fixture.clearAcpConnectionDump();
+            vi.spyOn(appServer, "threadRead").mockResolvedValue({thread: createThread({cwd: worktrees[0]!, path: path.join(root, "rollout.jsonl")})});
+
+            fixture.sendServerNotification({method: "thread/name/updated", params: {threadId}} as never);
+            await vi.advanceTimersByTimeAsync(100);
+
+            expect(listChanges(fixture)).toEqual([{
+                subscriptionId,
+                sessions: [expect.objectContaining({cwd: worktrees[0], _meta: {jetbrains: {air: expect.objectContaining({agentWorktree: true})}}})],
+                removed: [],
+            }]);
+            agent.sessionIndex.dispose();
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true});
         }
     });
 
@@ -1031,6 +1101,10 @@ describe("_session/archive and _session/unarchive", () => {
         expect(threadUnarchive).toHaveBeenCalledWith({threadId});
         expect(() => agent.getSessionState(threadId)).toThrow(`Session ${threadId} not found`);
         expect(infoUpdates()).toEqual([]);
+        // @ts-expect-error - a stale producer must not publish after the outer archive operation ended
+        await agent.connection.notify("session/update", {sessionId: threadId,
+            update: {sessionUpdate: "session_info_update", title: "Late"}});
+        expect(infoUpdates()).toEqual([]);
     });
 
     it("unarchives a session that is open here and reports its archive state to it", async () => {
@@ -1147,3 +1221,164 @@ describe("session/delete", () => {
 function missingRolloutError(): Error {
     return Object.assign(new Error(`no rollout found for thread id ${threadId}`), {code: -32600});
 }
+
+describe("_session/batch_get", () => {
+    const roots: string[] = [];
+    const disposals: (() => void)[] = [];
+    afterEach(() => {
+        for (const dispose of disposals.splice(0)) dispose();
+        for (const root of roots.splice(0)) {
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+    async function setup(threads: Thread[] = []) {
+        const result = await createAgent("sessionIndex", threads);
+        disposals.push(() => result.agent.sessionIndex.dispose());
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-batch-get-"));
+        roots.push(root);
+        vi.spyOn(result.client, "getHomePath").mockReturnValue(root);
+        const read = vi.spyOn(result.appServer, "threadRead");
+        return {...result, root, read};
+    }
+
+    it("reads older-than-50 metadata in request order with list row parity, archives and worktrees", async () => {
+        const recent = Array.from({length: 50}, (_, index) => createThread({id: `recent-${index}`, recencyAt: 1000 - index}));
+        const {agent, threadList, read, root} = await setup(recent);
+        const {repo, worktrees: [worktree]} = createGitLayout(root, ["worktree"]);
+        fs.writeFileSync(path.join(repo, ".git", "worktrees", "worktree", "codex-thread.json"), "{}");
+        const old = createThread({id: threadId, name: "Old session", recencyAt: 10, status: {type: "active", activeFlags: []}});
+        const archived = createThread({id: "archived", name: "Archived", path: path.join(root, "archived_sessions", "rollout.jsonl"), recencyAt: 5});
+        const linked = createThread({id: "worktree", cwd: worktree!, name: "Worktree", recencyAt: 1});
+        const rows = [old, archived, linked];
+        const list = await agent.listSessions({});
+        expect(list.sessions.map(row => row.sessionId)).not.toContain(old.id);
+        threadList.mockClear();
+        read.mockImplementation(async ({threadId}) => ({thread: rows.find(row => row.id === threadId)!}));
+
+        const requested = [linked.id, old.id, archived.id];
+        const batch = await agent.sessionIndex.batchGet({sessionIds: requested});
+        expect(threadList).not.toHaveBeenCalled();
+        expect(read.mock.calls.map(([params]) => params)).toEqual(requested.map(threadId => ({threadId, includeTurns: false})));
+        // A current stored copy is supplied by Codex, exactly as it is for list: no adapter copy scan/merge.
+        threadList.mockImplementation(async params => ({data: rows.filter(row => (row.id === archived.id) === params.archived), nextCursor: null, backwardsCursor: null}));
+        const all = await agent.listSessions({_meta: {jetbrains: {air: {list: {archived: "all"}}}}});
+        expect(batch).toEqual({sessions: requested.map(id => all.sessions.find(row => row.sessionId === id))});
+        expect((batch.sessions[0]!._meta as any).jetbrains.air.agentWorktree).toBe(true);
+        expect((batch.sessions[1]!._meta as any).jetbrains.air.state).toBe("running");
+        expect((batch.sessions[2]!._meta as any).jetbrains.air.archived).toBe(true);
+    });
+
+    it("shares live activity and additional directories with session/list", async () => {
+        const {agent, client, read, threadList, fixture, root} = await setup();
+        vi.spyOn(client, "listSkills").mockResolvedValue({data: []});
+        await openLocalSession(fixture, threadId, [root]);
+        const current = createThread({status: {type: "idle"}});
+        read.mockResolvedValue({thread: current});
+        threadList.mockResolvedValue({data: [current], nextCursor: null, backwardsCursor: null});
+        fixture.sendServerNotification({method: "turn/completed", params: {threadId, turn: {
+            id: "turn-1", items: [], itemsView: "notLoaded", status: "completed", error: null,
+            startedAt: 400, completedAt: 500, durationMs: 100,
+        }}} as never);
+        const batch = await agent.sessionIndex.batchGet({sessionIds: [threadId]});
+        const list = await agent.listSessions({});
+        expect(batch.sessions).toEqual(list.sessions);
+        expect(batch.sessions[0]!.additionalDirectories).toEqual([root]);
+        expect((batch.sessions[0]!._meta as any).jetbrains.air).toMatchObject({state: "idle", lastTurnEndedAt: "1970-01-01T00:08:20.000Z"});
+    });
+
+    it.each([
+        {ephemeral: true},
+        {source: "exec"},
+        {source: {subAgent: "review"}},
+        {preview: ""},
+        {path: null},
+    ] as Partial<Thread>[])("omits a thread that session/list does not show: %j", async hidden => {
+        const {agent, read} = await setup();
+        const listed = createThread({id: "listed"});
+        read.mockImplementation(async ({threadId}) => ({thread: threadId === "hidden" ? createThread({id: "hidden", ...hidden}) : listed}));
+        const result = await agent.sessionIndex.batchGet({sessionIds: ["hidden", listed.id]});
+        expect(result.sessions.map(row => row.sessionId)).toEqual([listed.id]);
+    });
+
+    it("does no store or process work for empty input", async () => {
+        const {agent, read, threadList, client} = await setup();
+        const home = vi.spyOn(client, "getHomePath");
+        expect(await agent.sessionIndex.batchGet({sessionIds: []})).toEqual({sessions: []});
+        expect(home).not.toHaveBeenCalled();
+        expect(read).not.toHaveBeenCalled();
+        expect(threadList).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        Object.assign(new Error("no rollout found for thread id known"), {code: -32600}),
+        Object.assign(new Error("failed to read thread metadata: database is locked"), {code: -32603}),
+        new Error("unexpected backend failure"),
+    ])("omits failed metadata reads and continues in request order: %s", async error => {
+        const {agent, read} = await setup();
+        const before = createThread({id: "before"});
+        const after = createThread({id: "after"});
+        read.mockResolvedValueOnce({thread: before}).mockRejectedValueOnce(error).mockResolvedValueOnce({thread: after});
+        const result = await agent.sessionIndex.batchGet({sessionIds: [before.id, "known", after.id]});
+        expect(result.sessions.map(row => row.sessionId)).toEqual([before.id, after.id]);
+    });
+
+    it("reads at most 8 ids at a time and keeps request order when reads finish out of order", async () => {
+        const {agent, read} = await setup();
+        const ids = Array.from({length: 20}, (_, index) => `id-${index}`);
+        const pending: {threadId: string; settle: () => void}[] = [];
+        let inFlight = 0;
+        let maxInFlight = 0;
+        read.mockImplementation(({threadId}) => new Promise((resolve, reject) => {
+            maxInFlight = Math.max(maxInFlight, ++inFlight);
+            pending.push({threadId, settle: () => {
+                inFlight--;
+                if (Number(threadId.slice(3)) % 3 === 0) reject(new Error(`no rollout found for thread id ${threadId}`));
+                else resolve({thread: createThread({id: threadId})} as any);
+            }});
+        }));
+        const result = agent.sessionIndex.batchGet({sessionIds: ids});
+        while (read.mock.calls.length < ids.length || pending.length > 0) {
+            await vi.waitFor(() => expect(pending.length).toBeGreaterThan(0));
+            // Settle the latest read first.
+            pending.splice(0).reverse().forEach(({settle}) => settle());
+        }
+        expect((await result).sessions.map(row => row.sessionId)).toEqual(ids.filter((_, index) => index % 3 !== 0));
+        expect(maxInFlight).toBe(8);
+        expect(read).toHaveBeenCalledTimes(ids.length);
+    });
+
+    it("stops starting reads after a connection failure", async () => {
+        const {agent, read} = await setup();
+        const error = Object.assign(new Error("Connection is inactive"), {code: -32096});
+        read.mockRejectedValue(error);
+        await expect(agent.sessionIndex.batchGet({sessionIds: Array.from({length: 30}, (_, index) => `id-${index}`)}))
+            .rejects.toBe(error);
+        expect(read).toHaveBeenCalledTimes(8);
+    });
+
+    it.each([
+        Object.assign(new Error("Pending response rejected since connection got disposed"), {code: -32097}),
+        Object.assign(new Error("Connection is inactive"), {code: -32096}),
+        Object.assign(new Error("failed to send"), {code: -32099}),
+        Object.assign(new Error("New upstream wording"), {code: -32600, data: {reason: "serverShuttingDown"}}),
+        new acp.RequestError(1001, "Codex process has exited"),
+    ])("rejects connection, process and shutdown failures: %s", async error => {
+        const {agent, read} = await setup();
+        read.mockRejectedValue(error);
+        await expect(agent.sessionIndex.batchGet({sessionIds: ["CANONICAL"]})).rejects.toBe(error);
+    });
+
+    it("returns unarchived rows without a local Codex home", async () => {
+        const {agent, client, read} = await setup();
+        vi.spyOn(client, "getHomePath").mockReturnValue(null);
+        read.mockResolvedValue({thread: createThread()});
+        const result = await agent.sessionIndex.batchGet({sessionIds: [threadId]});
+        expect(result.sessions.map(row => [row.sessionId, (row._meta as any).jetbrains.air.archived])).toEqual([[threadId, false]]);
+    });
+
+    it("does not emit a backend-normalized ID that was not requested", async () => {
+        const {agent, read} = await setup();
+        read.mockResolvedValue({thread: createThread()});
+        expect(await agent.sessionIndex.batchGet({sessionIds: [threadId.toUpperCase()]})).toEqual({sessions: []});
+    });
+});

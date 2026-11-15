@@ -1,5 +1,5 @@
-import * as acp from "@agentclientprotocol/sdk";
-import {RequestError} from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk/unstable";
+import {RequestError} from "@agentclientprotocol/sdk/unstable";
 import {randomUUID} from "node:crypto";
 import type {AcpClientConnection} from "./ACPSessionConnection";
 import {CodexAcpClient} from "./CodexAcpClient";

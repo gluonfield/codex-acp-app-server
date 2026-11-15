@@ -1,6 +1,6 @@
 import {beforeEach, describe, expect, it, vi} from 'vitest';
-import type * as acp from "@agentclientprotocol/sdk";
-import {RequestError} from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
+import {RequestError} from "@agentclientprotocol/sdk/unstable";
 import {createCodexMockTestFixture, createTestSessionState} from "../acp-test-utils";
 import type {SessionState} from "../../CodexAcpServer";
 import type {TurnCompletedNotification} from "../../app-server/v2";
@@ -10,6 +10,7 @@ function createTurn(id: string, status: "inProgress" | "completed" | "interrupte
     return {
         id,
         items: [],
+        rootTurnId: null,
         itemsView: "notLoaded" as const,
         status,
         error: status === "failed" ? {message: "provider failure", codexErrorInfo: "usageLimitExceeded" as const, additionalDetails: null, misalignment: null} : null,
@@ -49,6 +50,25 @@ describe('_session/steering', () => {
         vi.clearAllMocks();
     });
 
+    it('runs a side conversation while the parent turn is still active', async () => {
+        const {mockFixture, sessionState, turnCompleted} = startActiveTurn();
+        const agent = mockFixture.getCodexAcpAgent();
+        const main = agent.prompt({sessionId: "session-id", prompt: [{type: "text", text: "main question"}]});
+        await vi.waitFor(() => expect(sessionState.currentTurnId).toBe("turn-id"));
+        const codex = mockFixture.getCodexAcpClient();
+        const fork = vi.spyOn(codex, "forkSideSession").mockResolvedValue({sessionId: "side-thread", currentModelId: sessionState.currentModelId});
+        vi.spyOn(codex, "sendPrompt").mockResolvedValue({threadId: "side-thread", turn: createTurn("side-turn", "completed")});
+        try {
+            const side = agent.prompt({sessionId: "session-id", prompt: [{type: "text", text: "/btw side question"}]});
+            await vi.waitFor(() => expect(fork).toHaveBeenCalledOnce());
+            await expect(side).resolves.toMatchObject({stopReason: "end_turn"});
+            expect(sessionState.currentTurnId).toBe("turn-id");
+        } finally {
+            turnCompleted.resolve({threadId: "session-id", turn: createTurn("turn-id", "completed")});
+            await main;
+        }
+    });
+
     it('advertises completion-aware native steering', async () => {
         const mockFixture = createCodexMockTestFixture();
 
@@ -75,10 +95,13 @@ describe('_session/steering', () => {
             prompt: [{type: "text", text: "also keep backward compatibility"}],
         })).resolves.toEqual({outcome: "injected"});
 
+        // Every steer mints a fresh `clientUserMessageId` (Codex-side param only; no ACP wire
+        // change on v1).
         expect(turnSteerSpy).toHaveBeenCalledWith({
             threadId: "session-id",
             expectedTurnId: "turn-id",
             input: [{type: "text", text: "also keep backward compatibility", text_elements: []}],
+            clientUserMessageId: expect.any(String),
         });
 
         turnCompleted.resolve({
@@ -349,6 +372,7 @@ describe('_session/steering', () => {
             threadId: "session-id",
             expectedTurnId: "new-turn-id",
             input: [{type: "text", text: "second late follow-up", text_elements: []}],
+            clientUserMessageId: expect.any(String),
         });
 
         turnCompleted.resolve({
@@ -380,6 +404,28 @@ describe('_session/steering', () => {
         await expect(mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
             sessionId: "session-id",
         })).rejects.toThrow(RequestError);
+    });
+
+    it.each([
+        [],
+        false,
+        "invalid",
+        {steering: null},
+        {steering: []},
+        {steering: "invalid"},
+        {steering: {idleBehavior: null}},
+        {steering: {idleBehavior: "startDetachedTurn"}},
+    ])('rejects malformed steering metadata without starting or injecting a turn (%j)', async (_meta) => {
+        const mockFixture = createCodexMockTestFixture();
+        const turnStartSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnStart");
+        const turnSteerSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer");
+        await expect(mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
+            sessionId: "session-id",
+            prompt: [{type: "text", text: "do not consume this"}],
+            _meta,
+        })).rejects.toThrow(RequestError);
+        expect(turnStartSpy).not.toHaveBeenCalled();
+        expect(turnSteerSpy).not.toHaveBeenCalled();
     });
 
     it('rejects image input when the model does not support it', async () => {

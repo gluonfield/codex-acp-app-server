@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
 import {describe, expect, it, vi} from "vitest";
 import {ACPSessionConnection} from "../../ACPSessionConnection";
 import type {ServerNotification} from "../../app-server";
@@ -128,6 +128,8 @@ describe("session notices", () => {
                 startedAtMs: 0,
                 item: {
                     type: "subAgentActivity",
+                    model: null,
+                    reasoningEffort: null,
                     id: "notice-child-activity",
                     kind: "started",
                     agentThreadId: childSessionId,
@@ -158,7 +160,7 @@ describe("session notices", () => {
         const appServer = fixture.getCodexAppServerClient();
         const model = createTestModel();
         vi.spyOn(client, "readAuthRequirement").mockResolvedValue({required: false, account: null});
-        vi.spyOn(client, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false});
+        vi.spyOn(client, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false, userId: null});
         vi.spyOn(client, "listSkills").mockResolvedValue({data: []});
         vi.spyOn(appServer, "listModels").mockResolvedValue({data: [model], nextCursor: null});
         const thread = createThread();
@@ -214,6 +216,7 @@ async function createFixture(clientCapabilities?: unknown, nativeSubagents = fal
             true,
             new ACPSessionConnection(fixture.getAcpConnection(), sessionId),
             () => {},
+            () => ({currentModel: null, availableModels: []}),
         );
     }
     vi.spyOn(agent, "getSessionState").mockReturnValue(sessionState);
@@ -257,7 +260,7 @@ function modelRerouted(threadId: string): ServerNotification {
 }
 
 function createTurn(status: Turn["status"]): Turn {
-    return {id: turnId, items: [], itemsView: "full", status, error: null, startedAt: null, completedAt: null, durationMs: null};
+    return {id: turnId, rootTurnId: null, items: [], itemsView: "full", status, error: null, startedAt: null, completedAt: null, durationMs: null};
 }
 
 function createThread(): Thread {
@@ -290,9 +293,9 @@ function createThread(): Thread {
         gitInfo: null,
         name: null,
         turns: [{...createTurn("completed"), items: [
-            {type: "agentMessage", id: "before-compaction", text: "Before compaction.", phase: null, memoryCitation: null, delivery: null, questions: null},
+            {type: "agentMessage", id: "before-compaction", text: "Before compaction.", phase: null, moderation: null, memoryCitation: null, delivery: null, questions: null},
             {type: "contextCompaction", id: "history-compaction"},
-            {type: "agentMessage", id: "after-compaction", text: "After compaction.", phase: null, memoryCitation: null, delivery: null, questions: null},
+            {type: "agentMessage", id: "after-compaction", text: "After compaction.", phase: null, moderation: null, memoryCitation: null, delivery: null, questions: null},
         ]}],
     };
 }

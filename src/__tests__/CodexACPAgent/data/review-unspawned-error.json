@@ -1,0 +1,22 @@
+{
+  "updates": [
+    {
+      "sessionUpdate": "agent_message_chunk",
+      "content": {
+        "type": "text",
+        "text": "/test/cwd is not a git repository\n\n"
+      }
+    }
+  ],
+  "response": {
+    "stopReason": "end_turn",
+    "usage": null,
+    "_meta": {
+      "usageId": null,
+      "quota": {
+        "token_count": null,
+        "model_usage": []
+      }
+    }
+  }
+}

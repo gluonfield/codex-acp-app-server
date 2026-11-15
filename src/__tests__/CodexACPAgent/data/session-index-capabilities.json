@@ -11,9 +11,11 @@
     "planContentDelta",
     "codexHooks",
     "sessionIndex",
+    "sessionBatchGet",
     "sessionArchive",
     "sessionRename",
-    "sessionListSubscribe"
+    "sessionListSubscribe",
+    "sessionWorktrees"
   ],
   "airWithoutSessionIndex": [
     "sessionFailure",

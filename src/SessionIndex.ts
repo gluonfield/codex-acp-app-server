@@ -8,16 +8,20 @@
  * See `docs/air-extensions.md`.
  */
 
-import type * as acp from "@agentclientprotocol/sdk";
-import {RequestError} from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/unstable";
+import {RequestError} from "@agentclientprotocol/sdk/unstable";
 import {z} from "zod";
 import type {ServerNotification} from "./app-server";
 import type {Thread, ThreadListParams, ThreadListResponse, ThreadStatus, Turn} from "./app-server/v2";
 import {AIR_META_KEY, JETBRAINS_META_KEY, withAirMeta} from "./AirExtension";
 import {listedSessionTitle} from "./SessionTitle";
+import {isArchivedRolloutPath} from "./SessionIndexMutations";
 import {logger} from "./Logger";
 
 export const AIR_SESSION_INDEX_KEY = "sessionIndex";
+/** Agent capability: metadata for known IDs, including sessions outside the recent page. */
+export const AIR_SESSION_BATCH_GET_KEY = "sessionBatchGet";
+export const SESSION_BATCH_GET_METHOD = "_session/batch_get";
 /** Agent capability: `_session/archive` and `_session/unarchive`. Advertised exactly with `sessionIndex`. */
 export const AIR_SESSION_ARCHIVE_KEY = "sessionArchive";
 /** Agent capability: `_session/rename`. Advertised exactly with `sessionIndex`. */
@@ -30,6 +34,8 @@ export const AIR_SESSION_LIST_SUBSCRIBE_KEY = "sessionListSubscribe";
 export const SESSION_LIST_SUBSCRIBE_METHOD = "_session/list/subscribe";
 export const SESSION_LIST_UNSUBSCRIBE_METHOD = "_session/list/unsubscribe";
 export const SESSION_LIST_CHANGES_METHOD = "_session/list/changes";
+/** Agent capability: list rows carry {@link AIR_AGENT_WORKTREE_KEY}. Advertised exactly with `sessionIndex`. */
+export const AIR_SESSION_WORKTREES_KEY = "sessionWorktrees";
 
 /** The `_meta.jetbrains.air` key of the list options in a `session/list` request. */
 export const AIR_SESSION_LIST_KEY = "list";
@@ -38,6 +44,8 @@ export const AIR_LAST_TURN_ENDED_AT_KEY = "lastTurnEndedAt";
 export const AIR_LAST_PROMPT_AT_KEY = "lastPromptAt";
 export const AIR_MODEL_KEY = "model";
 export const AIR_FORKED_FROM_KEY = "forkedFrom";
+/** The `_meta.jetbrains.air` key of a row whose cwd lies in a linked worktree that Codex made; omitted otherwise. */
+export const AIR_AGENT_WORKTREE_KEY = "agentWorktree";
 
 export const DEFAULT_SESSION_INDEX_LIMIT = 50;
 /** The largest page that the adapter asks Codex for. */
@@ -81,6 +89,28 @@ export interface SessionIndexThread {
     archived: boolean;
 }
 
+/** The sources that `thread/list` lists without `sourceKinds`: the CLI and the IDE extensions, as AIR. */
+export function isInteractiveSource(thread: Thread): boolean {
+    return thread.source === "cli" || thread.source === "vscode";
+}
+
+/**
+ * Whether `thread/list` lists a thread that `thread/read` returned: one that is not ephemeral, from an
+ * interactive source, with a first user message, which is its `preview`.
+ */
+export function isListedThread(thread: Thread): boolean {
+    return !thread.ephemeral && isInteractiveSource(thread) && thread.preview !== "" && thread.path !== null;
+}
+
+/**
+ * The entry of a `thread/read` result, or null when `session/list` would not show the thread. Codex reports the
+ * archive state only through the rollout path.
+ */
+export function listedThreadEntry(thread: Thread, codexHome: string | null): SessionIndexThread | null {
+    if (!isListedThread(thread)) return null;
+    return {thread, archived: thread.path !== null && isArchivedRolloutPath(thread.path, codexHome)};
+}
+
 export type SessionActivityState = "running" | "idle" | "requires_action" | "reviewing" | "error";
 
 export interface SessionActivity {
@@ -90,6 +120,15 @@ export interface SessionActivity {
 
 export type SessionRenameRequest = { sessionId: string; title: string };
 export type SessionArchiveRequest = { sessionId: string };
+export type SessionBatchGetRequest = {sessionIds: string[]};
+export type SessionBatchGetResponse = {
+    sessions: acp.SessionInfo[];
+};
+
+export const sessionBatchGetParamsParser = z.strictObject({
+    sessionIds: z.array(z.string().refine(id => id.trim().length > 0, "sessionIds must not be blank"))
+        .refine(ids => new Set(ids).size === ids.length, "sessionIds must be distinct"),
+});
 
 export const sessionRenameParamsParser = z.object({
     sessionId: z.string(),
@@ -429,6 +468,7 @@ export function sessionIndexSessionInfo(
     thread: Thread,
     archived: boolean,
     activity: SessionActivity | null,
+    agentWorktree = false,
 ): acp.SessionInfo {
     const airFields: Record<string, unknown> = {[AIR_ARCHIVED_KEY]: archived};
     // Codex moves `recencyAt` when a turn starts and orders threads by it: the time of the last prompt.
@@ -438,6 +478,7 @@ export function sessionIndexSessionInfo(
     // `state` is omitted when unknown, never "unknown".
     if (activity?.state !== undefined) airFields[AIR_STATE_KEY] = activity.state;
     if (activity?.lastTurnEndedAt !== undefined) airFields[AIR_LAST_TURN_ENDED_AT_KEY] = activity.lastTurnEndedAt;
+    if (agentWorktree) airFields[AIR_AGENT_WORKTREE_KEY] = true;
     let meta: Record<string, unknown> | undefined;
     for (const [key, value] of Object.entries(airFields)) {
         meta = withAirMeta(meta, key, value);
@@ -567,7 +608,14 @@ export function sessionIndexRowSignature(row: acp.SessionInfo): string {
         air[AIR_MODEL_KEY] ?? null,
         air[AIR_FORKED_FROM_KEY] ?? null,
         air[AIR_ARCHIVED_KEY] ?? null,
+        air[AIR_AGENT_WORKTREE_KEY] ?? null,
     ]);
+}
+
+/** The AIR field `forkedFrom` of a row: the thread that its thread was forked from, else `null`. */
+export function sessionIndexRowForkedFrom(row: acp.SessionInfo): string | null {
+    const forkedFrom = asRecord(asRecord(asRecord(row._meta)[JETBRAINS_META_KEY])[AIR_META_KEY])[AIR_FORKED_FROM_KEY];
+    return typeof forkedFrom === "string" ? forkedFrom : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

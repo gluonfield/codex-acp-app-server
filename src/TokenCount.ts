@@ -1,5 +1,5 @@
 import type {UpdateSessionEvent} from "./ACPSessionConnection";
-import type {Usage} from "@agentclientprotocol/sdk";
+import type {Usage} from "@agentclientprotocol/sdk/unstable";
 import type {TokenUsageBreakdown} from "./app-server/v2";
 
 /**

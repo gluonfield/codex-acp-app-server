@@ -137,7 +137,7 @@ export function collab(
 
 /** The activity item that announces the session of a spawned subagent. */
 export function spawnActivity(id: string, agentThreadId: string, agentPath: string, threadId = SESSION_ID): ScenarioStep {
-    return started({type: "subAgentActivity", id, kind: "started", agentThreadId, agentPath}, threadId);
+    return started({type: "subAgentActivity", model: null, reasoningEffort: null, id, kind: "started", agentThreadId, agentPath}, threadId);
 }
 
 /** An event of a subagent thread. */
@@ -309,11 +309,17 @@ export const SCENARIOS: Scenario[] = [
         name: "subagent-activity",
         steps: [
             started({
-                type: "subAgentActivity", id: "act-1", kind: "started", agentThreadId: CHILD_THREAD_ID,
+                type: "subAgentActivity",
+                model: null,
+                reasoningEffort: null,
+                id: "act-1", kind: "started", agentThreadId: CHILD_THREAD_ID,
                 agentPath: "/root/weather",
             }),
             completed({
-                type: "subAgentActivity", id: "act-1", kind: "started", agentThreadId: CHILD_THREAD_ID,
+                type: "subAgentActivity",
+                model: null,
+                reasoningEffort: null,
+                id: "act-1", kind: "started", agentThreadId: CHILD_THREAD_ID,
                 agentPath: "/root/weather",
             }),
             {notify: {
@@ -322,11 +328,17 @@ export const SCENARIOS: Scenario[] = [
             }},
             {notify: turnCompleted(CHILD_THREAD_ID, "child-turn")},
             started({
-                type: "subAgentActivity", id: "act-2", kind: "completed", agentThreadId: CHILD_THREAD_ID,
+                type: "subAgentActivity",
+                model: null,
+                reasoningEffort: null,
+                id: "act-2", kind: "completed", agentThreadId: CHILD_THREAD_ID,
                 agentPath: "/root/weather",
             }),
             completed({
-                type: "subAgentActivity", id: "act-2", kind: "completed", agentThreadId: CHILD_THREAD_ID,
+                type: "subAgentActivity",
+                model: null,
+                reasoningEffort: null,
+                id: "act-2", kind: "completed", agentThreadId: CHILD_THREAD_ID,
                 agentPath: "/root/weather",
             }),
         ],
@@ -543,13 +555,13 @@ export const SCENARIOS: Scenario[] = [
             notify("item/reasoning/textDelta", {itemId: "rs-1", delta: "raw reasoning", contentIndex: 0}),
             completed({type: "reasoning", id: "rs-1", summary: ["Thinking about it"], content: ["raw reasoning"]}),
             started({
-                type: "agentMessage", id: "msg-1", text: "", phase: "final_answer", memoryCitation: null,
+                type: "agentMessage", id: "msg-1", text: "", phase: "final_answer", moderation: null, memoryCitation: null,
                 delivery: null, questions: null,
             }),
             notify("item/agentMessage/delta", {itemId: "msg-1", delta: "Hello "}),
             notify("item/agentMessage/delta", {itemId: "msg-1", delta: "world"}),
             completed({
-                type: "agentMessage", id: "msg-1", text: "Hello world", phase: "final_answer", memoryCitation: null,
+                type: "agentMessage", id: "msg-1", text: "Hello world", phase: "final_answer", moderation: null, memoryCitation: null,
                 delivery: null, questions: null,
             }),
         ],
@@ -669,7 +681,7 @@ export const SCENARIOS: Scenario[] = [
             {type: "plan", id: "h-plan", text: "# Plan\n\n1. Ship."},
             {type: "reasoning", id: "h-rs", summary: ["Thought about it"], content: []},
             {
-                type: "agentMessage", id: "h-msg", text: "Done.", phase: null, memoryCitation: null,
+                type: "agentMessage", id: "h-msg", text: "Done.", phase: null, moderation: null, memoryCitation: null,
                 delivery: null, questions: null,
             },
         ],

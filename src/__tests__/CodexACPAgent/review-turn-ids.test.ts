@@ -4,6 +4,7 @@ import type {ServerNotification} from "../../app-server";
 import type {ErrorNotification, ReviewStartResponse} from "../../app-server/v2";
 import {createCodexMockTestFixture, createTestModel, type CodexMockTestFixture} from "../acp-test-utils";
 import type {CodexAcpServer, SessionState} from "../../CodexAcpServer";
+import {SESSION_STEERING_METHOD} from "../../AcpExtensions";
 
 // Codex answers `review/start` with the parent turn id and reports the review's items, errors and
 // completion under it, but starts (and only accepts `turn/interrupt` for) a reviewer child turn.
@@ -272,6 +273,40 @@ describe("normal turn ids", () => {
 
         expect(turnInterrupt).toHaveBeenCalledWith({threadId: sessionId, turnId: "turn-id"});
         await expect(prompt).resolves.toMatchObject({stopReason: "cancelled"});
+    });
+
+    it("steers the root turn while a subagent's turn is running", async () => {
+        const fixture = createCodexMockTestFixture();
+        const agent = fixture.getCodexAcpAgent();
+        const sessionState = await createSession(fixture);
+        vi.spyOn(fixture.getCodexAppServerClient(), "turnStart").mockResolvedValue({turn: turn("turn-id", "inProgress")});
+        const turnSteer = vi.spyOn(fixture.getCodexAppServerClient(), "turnSteer").mockResolvedValue({turnId: "turn-id"});
+
+        const prompt = agent.prompt({sessionId, prompt: [{type: "text", text: "hello"}]});
+        await vi.waitFor(() => expect(sessionState.currentTurnId).toBe("turn-id"));
+        fixture.sendServerNotification({method: "turn/started", params: {threadId: sessionId, turn: turn("turn-id", "inProgress")}});
+        fixture.sendServerNotification({
+            method: "item/started",
+            params: {
+                threadId: sessionId, turnId: "turn-id", startedAtMs: 0,
+                item: {
+                    type: "collabAgentToolCall", id: "spawn", tool: "spawnAgent", status: "inProgress",
+                    senderThreadId: sessionId, receiverThreadIds: ["child-thread"], prompt: "Investigate",
+                    model: null, reasoningEffort: null, agentsStates: {"child-thread": {status: "running", message: null}},
+                },
+            },
+        });
+        fixture.sendServerNotification({method: "turn/started", params: {threadId: "child-thread", turn: turn("child-turn", "inProgress")}});
+        await fixture.getCodexAcpClient().waitForSessionNotifications(sessionId);
+
+        await expect(agent.extMethod(SESSION_STEERING_METHOD, {
+            sessionId,
+            prompt: [{type: "text", text: "change of plan"}],
+        })).resolves.toEqual({outcome: "injected"});
+        expect(turnSteer).toHaveBeenCalledWith(expect.objectContaining({threadId: sessionId, expectedTurnId: "turn-id"}));
+
+        fixture.sendServerNotification({method: "turn/completed", params: {threadId: sessionId, turn: turn("turn-id", "completed")}});
+        await expect(prompt).resolves.toMatchObject({stopReason: "end_turn"});
     });
 });
 

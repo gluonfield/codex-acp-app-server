@@ -62,6 +62,8 @@ Only these differences are allowed:
   no output after a tool call ended, a terminal status for a replayed image generation,
   and the command as the title of a command approval.
 - Feature changes for every client: the `/mcp` command has a new description and an input hint.
+  Session `configOptions` list model, reasoning effort, fast mode, permissions mode, and collaboration mode
+  in that order, omitting unavailable options.
 - The client gets no AIR-only key.
   That is no `_meta.jetbrains.air` key and none of the earlier keys in [Removed keys](#removed-keys).
 - The output of a command arrives once, in the chunks or in `content`, as [Zed conventions](#zed-conventions) describe.
@@ -357,7 +359,7 @@ The other clients get the same fields as before the AIR extensions.
 | `webSearch` | `kind: search`, a title that names the query or the page, `rawInput = {query, action}`. | A live report has `rawInput = {type, id, query, action}`. |
 | `imageGeneration` | `kind: other`, `title: "Image generation"`. The revised prompt and the image go to `content`. A saved image without data goes to `content` as a resource link. | The start has `rawInput = {id}`. The end has `rawOutput = {status, revisedPrompt, result, savedPath}`, and no resource link. |
 | `plan` item (the Markdown plan of plan mode) | With `planContentDelta`, appended text in `plan_update`. | `plan_update` snapshots when the client shows plans. Otherwise the whole plan in one `agent_message_chunk` when the plan item completes. |
-| Turn plan (`turn/plan/updated`) | standard `plan` with entries | The same. |
+| Turn plan (`turn/plan/updated`) | `plan_update` with an `items` plan when the client shows plans, otherwise standard `plan` with entries. See [Plans](plans.md). | The same. |
 | `contextCompaction` | `compaction_update` when the client declares `session.compaction`. Otherwise a synthetic tool call with `_meta.jetbrains.air.contextCompaction`. | The same, without `_meta`. |
 | `agentMessage` | `agent_message_chunk` with `_meta.jetbrains.air.phase` when Codex reports a phase. | No `_meta`. |
 | Command, file change, or sandbox permission request | See [Tool call of the request](#tool-call-of-the-request). | `kind`, `status: pending`, and a title, also for a started tool call. Command approvals keep the started title or show the command; other requests use a generic title or a network title. No `_meta`. |
@@ -937,7 +939,7 @@ It does not go out as a `sessionFailure` record. Errors still use `sessionFailur
 | `category` | yes | category | Broad visual group. |
 | `severity` | yes | `warning` or `error` | Inline warning or error presentation. |
 | `title` | yes | string | The complete user-facing text. |
-| `details` | no | string | Long text that does not fit in `title`. |
+| `details` | no | string | Long text that does not fit in `title`, or the cause of a retry. |
 | `actions` | yes | ordered string array | Recovery actions that the adapter recommends. |
 
 ### Identity and revisions
@@ -971,6 +973,7 @@ It does not go out as a `sessionFailure` record. Errors still use `sessionFailur
 | `warning`, `configWarning`, `deprecationNotice` notifications | `unknown` | none |
 
 A retry warning (`willRetry: true`) has `severity: warning` and no actions.
+A terminal failure (`willRetry: false`) of the same turn updates that incident with `severity: error` and its actions.
 A notice has `severity: warning`.
 A `deprecationNotice` is shown only to a client with the capability. Other clients never saw it.
 
@@ -988,6 +991,13 @@ An unexpected adapter error uses `Codex encountered an internal error.`
 A notice with details puts `summary — details` in the title when that fits in 240 characters.
 Otherwise the summary goes to `title` and the details go to `details`.
 
+A retry warning puts the trimmed Codex `additionalDetails` in `details`.
+When `additionalDetails` is null or blank, the record has no `details` key.
+Each revision carries only its own details.
+A revision without details does not keep the details of an earlier revision.
+A terminal failure carries no details.
+The adapter does not send the `additionalDetails` of a terminal failure.
+
 ### Recovery
 
 Recovery is internal adapter state and is not sent.
@@ -997,15 +1007,14 @@ Recovery never removes the transcript record.
 
 ## Native subagent sessions
 
-The adapter implements the draft [ACP subagent RFD](https://github.com/agentclientprotocol/agent-client-protocol/pull/1992).
-[Subagent sessions](subagent-sessions.md) describes the lifecycle.
+AIR keeps the private subagent contract that predates the ACP Subagent Sessions RFD.
+[Subagent sessions](subagent-sessions.md#air-legacy-contract) describes its lifecycle and the standard contract of other clients.
 This section covers only the AIR bridge.
 
-- The canonical client field is `clientCapabilities.subagents: {}`.
-- Released ACP SDKs can strip that draft field.
-  AIR can instead declare `nativeSubagentSessions` in `_meta.jetbrains.air.capabilities`.
-- Either signal enables native subagent sessions. New clients must prefer the canonical field.
-- The agent always advertises `agentCapabilities.sessionCapabilities.subagents`. It advertises `nativeSubagentSessions` to AIR.
+- AIR declares `nativeSubagentSessions` in `_meta.jetbrains.air.capabilities`, or on v1 `clientCapabilities.subagents: {}`.
+- Either signal enables native subagent sessions for AIR.
+- The agent advertises `agentCapabilities.sessionCapabilities.subagents` and `nativeSubagentSessions` to AIR only.
+  A client that is not AIR gets neither, because the RFD defines no Agent-side capability.
 - Without either signal, a Codex subagent stays an ordinary tool call.
   AIR gets `_meta.jetbrains.air.subagent: true` on a spawn. Another client gets the tool call without `_meta`.
 

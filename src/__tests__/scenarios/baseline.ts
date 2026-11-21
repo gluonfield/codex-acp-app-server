@@ -141,7 +141,9 @@ const MCP_COMMAND = {
 /**
  * The feature changes of the compatibility rule that change the messages of the scenarios:
  * the `/mcp` command has a new description and an input hint.
+ * Session config options put permissions and collaboration modes after the model options.
  * Initialize also advertises text-only append system prompts and client-set titles.
+ * It no longer advertises `sessionCapabilities.subagents`, which the subagent RFD does not define for an Agent.
  * Only a command that equals the baseline `/mcp` command changes.
  */
 export function withFeatureChanges(messages: RecordedMessage[]): RecordedMessage[] {
@@ -152,9 +154,19 @@ export function withFeatureChanges(messages: RecordedMessage[]): RecordedMessage
             const capabilities = params["agentCapabilities"] as Json | undefined;
             const session = capabilities?.["sessionCapabilities"] as Json | undefined;
             if (session) {
+                const {subagents: _subagents, ...kept} = session;
                 return {...message, params: {...params, agentCapabilities: {
-                    ...capabilities, sessionCapabilities: {...session, systemPrompt: {}, title: {}},
+                    ...capabilities, sessionCapabilities: {...kept, systemPrompt: {}, title: {}},
                 }}};
+            }
+        }
+        if (message.direction === "response") {
+            const params = message.params as Json;
+            const options = params?.["configOptions"];
+            if (Array.isArray(options)) {
+                const isMode = (option: Json) => option["id"] === "mode" || option["id"] === "collaboration_mode";
+                const configOptions = [...options.filter(option => !isMode(option)), ...options.filter(isMode)];
+                return {...message, params: {...params, configOptions}};
             }
         }
         const update = sessionUpdate(message);

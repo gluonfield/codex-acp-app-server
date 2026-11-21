@@ -19,7 +19,8 @@ const questionItem: ThreadItem = {
     id: "call-question",
     text: "Which environment?\n- Staging\n- Production\n\nAnything else?",
     phase: "final_answer",
-    moderation: null, memoryCitation: null,
+    moderation: null,
+    memoryCitation: null,
     delivery: "async",
     questions: [
         {title: "Which environment?", options: ["Staging", "Production"]},

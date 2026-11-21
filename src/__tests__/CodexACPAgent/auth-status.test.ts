@@ -346,7 +346,7 @@ describe("authStatus extension", () => {
             const accountSpy = mockAccount(fixture, {type: "chatgpt", email: "user@example.com", planType: "pro", workspaceName: null});
 
             await agent.authenticate({methodId: "chat-gpt"});
-            accountSpy.mockResolvedValue({account: null, requiresOpenaiAuth: true, userId: null});
+            accountSpy.mockResolvedValue({account: null, userId: null, requiresOpenaiAuth: true});
             await agent.logout({});
 
             expect(authStatusUpdates(fixture)).toEqual([
@@ -438,7 +438,8 @@ describe("authStatus extension", () => {
             await agent.authenticate({methodId: "chat-gpt"});
             accountSpy.mockResolvedValue({
                 account: {type: "chatgpt", email: "user@example.com", planType: "pro", workspaceName: null},
-                requiresOpenaiAuth: false, userId: null,
+                userId: null,
+                requiresOpenaiAuth: false,
             });
             await agent.authenticate({methodId: "chat-gpt"});
 

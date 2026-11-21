@@ -56,7 +56,6 @@ describe('CodexACPAgent - initialize', () => {
                     fork: {},
                     title: {},
                     additionalDirectories: {},
-                    subagents: {},
                     systemPrompt: {},
                 },
                 mcpCapabilities: {
@@ -184,7 +183,7 @@ describe('CodexACPAgent - initialize', () => {
             nextCursor: null,
         });
 
-        const exact = new CodexAcpClient(appServer, {model_provider: "openrouter"}, undefined, {
+        const exact = new CodexAcpClient(appServer, {model_provider: "openrouter"}, undefined, undefined, {
             id: "custom",
             displayName: "Custom",
             description: null,
@@ -214,7 +213,7 @@ describe('CodexACPAgent - initialize', () => {
     });
 
     it('keeps exact custom-provider metadata for a restarted app-server', () => {
-        const client = new CodexAcpClient(new CodexAppServerClient(createMockConnections().mockCodexConnection), {model_provider: "openrouter"}, undefined, {
+        const client = new CodexAcpClient(new CodexAppServerClient(createMockConnections().mockCodexConnection), {model_provider: "openrouter"}, undefined, undefined, {
             id: "custom",
             displayName: "Custom",
             description: null,

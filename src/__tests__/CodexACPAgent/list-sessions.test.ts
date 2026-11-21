@@ -251,7 +251,8 @@ describe("CodexACPAgent - list sessions", () => {
         vi.spyOn(codexAcpClient, "readAuthRequirement").mockResolvedValue({required: false, account: null});
         vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({
             account: null,
-            requiresOpenaiAuth: false, userId: null,
+            userId: null,
+            requiresOpenaiAuth: false,
         });
         vi.spyOn(codexAcpClient, "newSession").mockResolvedValue({
             sessionId: "sess-1",

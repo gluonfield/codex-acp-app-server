@@ -4,6 +4,7 @@
     "message": "Try again later."
   },
   "stopReason": "error",
+  "background": [],
   "_meta": {
     "usageId": "turn-1",
     "quota": {

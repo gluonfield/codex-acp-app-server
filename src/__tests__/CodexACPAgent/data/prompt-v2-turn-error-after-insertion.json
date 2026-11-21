@@ -34,6 +34,7 @@
       },
       {
         "sessionUpdate": {
+          "background": [],
           "state": "running",
           "sessionUpdate": "state_update"
         }
@@ -82,6 +83,7 @@
             "message": "You've hit your usage limit."
           },
           "stopReason": "error",
+          "background": [],
           "_meta": {
             "usageId": "turn-1",
             "quota": {
@@ -130,6 +132,7 @@
       },
       {
         "sessionUpdate": {
+          "background": [],
           "state": "running",
           "sessionUpdate": "state_update"
         }
@@ -178,6 +181,7 @@
             "message": "Authentication required"
           },
           "stopReason": "error",
+          "background": [],
           "_meta": {
             "usageId": "turn-2",
             "quota": {

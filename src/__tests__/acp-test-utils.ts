@@ -17,7 +17,7 @@ import {DEFAULT_COLLABORATION_MODE} from "../CollaborationModeConfig";
 import {afterEach, beforeEach, expect, vi} from "vitest";
 import type {Model, ReasoningEffortOption} from "../app-server/v2";
 import {CodexSubagentEventRouter} from "../subagents/CodexSubagentEventRouter";
-import {CodexEventHandler} from "../CodexEventHandler";
+import {CodexEventHandler, SessionFailureIds} from "../CodexEventHandler";
 import type {AccountUpdatedNotification} from "../app-server/v2";
 import {CodexBackgroundTerminalTasks} from "../async-tasks/CodexBackgroundTerminalTasks";
 import {CodexSessionCompactions} from "../CodexSessionCompactions";
@@ -437,6 +437,7 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         lastTokenUsage: null,
         promptTokenUsage: new TurnTokenUsage(),
         totalTokenUsage: null,
+        threadHasHistory: true,
         modelContextWindow: null,
         rateLimits: null,
         account: null,
@@ -615,7 +616,7 @@ export function createTestEventHandler(
         connection,
         sessionState,
         options.typedSessionFailures ?? false,
-        options.sessionFailureEpoch ?? "test-epoch",
+        new SessionFailureIds(options.sessionFailureEpoch ?? "test-epoch"),
         sessionState.subagents,
         options.onAccountUpdated,
         options.collectTurnDiffs ?? false,

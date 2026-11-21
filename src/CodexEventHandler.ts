@@ -18,6 +18,8 @@ import type {
     ConfigWarningNotification,
     DeprecationNoticeNotification,
     ErrorNotification,
+    HookCompletedNotification,
+    HookEventName,
     ItemCompletedNotification,
     ItemStartedNotification,
     ThreadItem,
@@ -47,7 +49,7 @@ import {ImageGenerationReporter} from "./tool-calls/reporters/ImageGenerationRep
 import {ImageViewReporter} from "./tool-calls/reporters/ImageViewReporter";
 import {McpToolReporter} from "./tool-calls/reporters/McpToolReporter";
 import {WebSearchReporter} from "./tool-calls/reporters/WebSearchReporter";
-import {CodexPlanStream} from "./CodexPlanStream";
+import {CodexPlanStream, structuredPlanUpdate} from "./CodexPlanStream";
 import {isWorkspaceRoutingUnavailableMessage} from "./CodexThreadErrors";
 import {
     createMessagePhaseMeta,
@@ -193,18 +195,58 @@ export function failureWasShownAsMessage(error: unknown): boolean {
     return error instanceof RequestError && failuresShownAsMessages.has(error);
 }
 
+/** What a hook of the event blocks, for the title of its notice. */
+function hookBlockTarget(eventName: HookEventName): string {
+    switch (eventName) {
+        case "userPromptSubmit":
+            return "the prompt";
+        case "preToolUse":
+        case "permissionRequest":
+            return "the tool call";
+        case "postToolUse":
+            return "the tool result";
+        case "preModelRequest":
+            return "the model request";
+        case "preCompact":
+            return "the compaction";
+        case "subagentStart":
+            return "the subagent";
+        case "postModelRequest":
+        case "postCompact":
+        case "sessionStart":
+        case "sessionEnd":
+        case "subagentStop":
+        case "stop":
+        case "interrupt":
+            return "the request";
+    }
+}
+
+/**
+ * Numbers failure and advisory ids for the adapter process. Each prompt gets its own event handler, so the counter
+ * must outlive a handler: otherwise the first advisory of every prompt gets the same id and revision.
+ */
+export class SessionFailureIds {
+    private next = 1;
+
+    constructor(private readonly epoch: string) {}
+
+    allocate(): string {
+        return `${this.epoch}:${this.next++}`;
+    }
+}
+
 export class CodexEventHandler {
 
     private readonly sessionState: SessionState;
     private readonly supportsTypedSessionFailures: boolean;
-    private readonly sessionFailureEpoch: string;
+    private readonly sessionFailureIds: SessionFailureIds;
     private readonly pendingErrors: ErrorNotification[] = [];
     private readonly failuresById = new Map<string, SessionFailure>();
     private readonly activeFailureIdByScope = new Map<string, string>();
     private readonly failureTurnIdById = new Map<string, string | undefined>();
     private readonly allocatedFailureScopes = new Set<string>();
     private lastSessionNotice: {key: string; failure: SessionFailure} | undefined;
-    private nextNoticeId = 1;
     private failure: RequestError | null = null;
     private terminalTurnError: {turnId: string; error: ErrorNotification["error"]} | null = null;
     private completedPlan: CompletedPlan | null = null;
@@ -228,7 +270,7 @@ export class CodexEventHandler {
         connection: AcpClientConnection,
         sessionState: SessionState,
         supportsTypedSessionFailures: boolean,
-        sessionFailureEpoch: string,
+        sessionFailureIds: SessionFailureIds,
         subagents: SubagentEventRouter,
         onAccountUpdated: ((notification: AccountUpdatedNotification) => void) | undefined,
         collectTurnDiffs: boolean,
@@ -238,7 +280,7 @@ export class CodexEventHandler {
         this.onAccountUpdated = onAccountUpdated;
         this.sessionState = sessionState;
         this.supportsTypedSessionFailures = supportsTypedSessionFailures;
-        this.sessionFailureEpoch = sessionFailureEpoch;
+        this.sessionFailureIds = sessionFailureIds;
         this.session = new ACPSessionConnection(connection, sessionState.sessionId);
         this.renderer = new AcpToolCallRenderer(sessionState.clientCapabilities);
         this.plans = new CodexPlanStream(this.session, sessionState.clientCapabilities);
@@ -439,9 +481,13 @@ export class CodexEventHandler {
         await this.finishCompactionsForNotification(notification);
         const closingChildren = this.subagents.closingChildSessions(notification);
         for (const child of closingChildren) {
+            // Discover processes that outlived the child turn before finalizing its foreground tools.
+            await this.sessionState.asyncTasks.reconcile(child.threadId, child.sessionId);
             if (this.subagents instanceof StandardSubagentEventRouter) {
                 const turnId = notification.method === "turn/completed" ? notification.params.turn.id : undefined;
-                for (const update of this.subagents.openToolCalls(child.threadId)?.finishOutstanding(turnId) ?? []) {
+                for (const update of this.subagents.openToolCalls(child.threadId)?.finishOutstanding(
+                    turnId, id => this.session.forSession(child.sessionId).hasBackgroundItem({type: "terminal", terminalId: id}),
+                ) ?? []) {
                     await this.session.update(update, child.sessionId);
                 }
             }
@@ -449,7 +495,6 @@ export class CodexEventHandler {
                 child.state === "cancelled" ? "cancelled" : "failed",
                 child.sessionId,
             );
-            await this.sessionState.asyncTasks.reconcile(child.threadId, child.sessionId);
         }
         const handledBySubagents = await this.subagents.handle(notification);
         for (const buffered of this.subagents.takeBufferedNotifications()) {
@@ -463,7 +508,9 @@ export class CodexEventHandler {
             && notification.params.item.type === "commandExecution") {
             updateEvent = await this.createUpdateEvent(notification);
         }
-        if (!handledBySubagents) {
+        const finishTerminal = this.session.protocolVersion === 2 && notification.method === "item/completed"
+            && notification.params.item.type === "commandExecution";
+        if (!handledBySubagents && !finishTerminal) {
             await this.sessionState.asyncTasks.handleNotification(
                 notification,
                 this.subagents.notificationSessionId(notification),
@@ -475,6 +522,9 @@ export class CodexEventHandler {
         if (updateEvent === undefined) updateEvent = await this.createUpdateEvent(notification);
         if (updateEvent) {
             await this.publishUpdate(updateEvent, this.subagents.notificationSessionId(notification));
+        }
+        if (finishTerminal) {
+            await this.sessionState.asyncTasks.handleNotification(notification, this.subagents.notificationSessionId(notification));
         }
     }
 
@@ -585,9 +635,14 @@ export class CodexEventHandler {
                 this.completeRetryIncidentOnTurnProgress(notification.params.threadId);
                 this.openToolCalls(notification.params.threadId).complete(notification.params.item.id);
                 return await this.completeItemEvent(notification.params);
-            case "turn/plan/updated":
+            case "turn/plan/updated": {
                 this.completeRetryIncidentOnTurnProgress(notification.params.threadId);
-                return await this.updatePlan(notification.params);
+                const update = this.updatePlan(notification.params);
+                if (this.session.protocolVersion !== 2 || notification.params.plan.length !== 0 || update.sessionUpdate !== "plan_update") return update;
+                // Baseline v2 clients can clear the checklist even if they don't act on plan_removed.
+                await this.publishUpdate(update, this.subagents.notificationSessionId(notification));
+                return {sessionUpdate: "plan_removed", planId: update.plan.planId};
+            }
             case "turn/diff/updated":
                 if (notification.params.threadId === this.sessionState.sessionId) {
                     this.completeRetryIncidentOnTurnProgress(notification.params.threadId);
@@ -624,7 +679,8 @@ export class CodexEventHandler {
                 this.sessionState.currentTurnId = null;
                 this.sessionState.interruptTurnId = null;
                 if (this.session.protocolVersion === 2 && notification.params.turn.status === "failed") {
-                    for (const update of this.sessionState.openToolCalls.finishOutstanding()) {
+                    for (const update of this.sessionState.openToolCalls.finishOutstanding(undefined,
+                        id => this.session.hasBackgroundItem({type: "terminal", terminalId: id}))) {
                         await this.session.update(update, this.subagents.notificationSessionId(notification));
                     }
                 }
@@ -663,9 +719,15 @@ export class CodexEventHandler {
                 return this.createCodexSessionInfoUpdate({
                     closed: true,
                 });
-            case "item/commandExecution/outputDelta":
+            case "item/commandExecution/outputDelta": {
                 this.completeRetryIncidentOnTurnProgress(notification.params.threadId);
-                return this.renderer.render(this.streamsFor(notification.params.threadId).commands.outputDelta(notification.params.itemId, notification.params.delta));
+                const commands = this.streamsFor(notification.params.threadId).commands;
+                if (this.session.forSession(this.subagents.notificationSessionId(notification))
+                    .hasBackgroundItem({type: "terminal", terminalId: notification.params.itemId})) {
+                    commands.observeTerminal(notification.params.itemId);
+                }
+                return this.renderer.render(commands.outputDelta(notification.params.itemId, notification.params.delta));
+            }
             case "item/mcpToolCall/progress":
                 this.completeRetryIncidentOnTurnProgress(notification.params.threadId);
                 // AIR does not show MCP progress.
@@ -684,6 +746,8 @@ export class CodexEventHandler {
                 return await this.createConfigWarningEvent(notification.params);
             case "warning":
                 return this.createWarningEvent(notification.params);
+            case "hook/completed":
+                return this.createHookCompletedEvent(notification.params);
             case "guardianWarning":
                 return null;
             case "deprecationNotice":
@@ -722,6 +786,9 @@ export class CodexEventHandler {
                     notification.params.itemId,
                     notification.params.stdin,
                 ));
+            case "thread/section/changed":
+                // Thread sections have no ACP session update counterpart.
+                return null;
             case "thread/attachment/updated":
                 // Persisted attachment metadata has no ACP session update counterpart.
                 return null;
@@ -745,7 +812,6 @@ export class CodexEventHandler {
             case "thread/environment/disconnected":
             case "command/exec/outputDelta":
             case "hook/started":
-            case "hook/completed":
             case "turn/moderationMetadata":
             case "item/fileChange/outputDelta":
             case "item/fileChange/patchUpdated":
@@ -873,6 +939,27 @@ export class CodexEventHandler {
         return createAgentTextMessageChunk(`Warning: ${event.message}\n\n`);
     }
 
+    /**
+     * A hook that blocks or stops Codex can end the turn before the model runs. Without this the client sees
+     * an empty turn and no reason. Other hook results do not change what Codex does, so they stay silent.
+     */
+    private createHookCompletedEvent({run}: HookCompletedNotification): UpdateSessionEvent | null {
+        if (run.status !== "blocked" && run.status !== "stopped") return null;
+        const eventName = run.eventName.charAt(0).toUpperCase() + run.eventName.slice(1);
+        const title = `${eventName} hook ${run.status === "blocked" ? `blocked ${hookBlockTarget(run.eventName)}` : "stopped the turn"}`;
+        // Context entries are text the hook adds to the model input, not a reason.
+        const reason = run.entries
+            .filter(entry => entry.kind !== "context")
+            .map(entry => entry.text.trim())
+            .filter(text => text.length > 0)
+            .join("\n") || null;
+        if (this.supportsNotices) return createSessionNotice("warning", title, reason);
+        if (this.supportsTypedSessionFailures) {
+            return this.createSessionFailureUpdate(this.recordSessionNotice(...this.sessionNoticeContent(title, reason)));
+        }
+        return createAgentTextMessageChunk(reason === null ? `${title}.\n\n` : `${title}: ${reason}\n\n`);
+    }
+
     private createModelReroutedEvent(event: ModelReroutedNotification): UpdateSessionEvent {
         if (!this.supportsNotices) {
             return createAgentTextThoughtChunk(`Model rerouted from ${event.fromModel} to ${event.toModel} (${event.reason}).\n\n`);
@@ -976,8 +1063,14 @@ export class CodexEventHandler {
                 return this.renderer.render(DynamicToolReporter.completed(event.item));
             case "mcpToolCall":
                 return this.renderer.render(McpToolReporter.completed(event.item));
-            case "commandExecution":
-                return this.renderer.render(this.streamsFor(event.threadId).commands.completed(event.item, true));
+            case "commandExecution": {
+                const commands = this.streamsFor(event.threadId).commands;
+                if (this.session.forSession(this.subagents.notificationSessionId({method: "item/completed", params: event}))
+                    .hasBackgroundItem({type: "terminal", terminalId: event.item.id})) {
+                    commands.observeTerminal(event.item.id);
+                }
+                return this.renderer.render(commands.completed(event.item, true));
+            }
             case "imageView":
                 if (this.streamsFor(event.threadId).emittedImageViewItems.delete(event.item.id)) {
                     return null;
@@ -1079,17 +1172,14 @@ export class CodexEventHandler {
         this.openToolCalls(threadId).start(item.id, hasTerminal, turnId);
     }
 
-    private async updatePlan(event: TurnPlanUpdatedNotification): Promise<UpdateSessionEvent> {
+    private updatePlan(event: TurnPlanUpdatedNotification): UpdateSessionEvent {
         const plan: PlanEntry[] = event.plan.map(value => ({
                 status: value.status == "inProgress" ? "in_progress" : value.status,
                 content: value.step,
                 priority: "medium"
             })
         );
-        return {
-            sessionUpdate: "plan",
-            entries: plan,
-        }
+        return structuredPlanUpdate(plan, this.sessionState.clientCapabilities);
     }
 
     private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent | null> {
@@ -1168,6 +1258,7 @@ export class CodexEventHandler {
         title: string,
         actionsOverride?: SessionFailureAction[],
         attributeToTurn = true,
+        details?: string,
     ): NonNullable<SessionState["sessionFailure"]> {
         const policy = SESSION_FAILURE_POLICY[kind];
         const scope = turnId ?? this.sessionState.sessionId;
@@ -1180,6 +1271,7 @@ export class CodexEventHandler {
             category: policy.category,
             severity,
             title: readableServiceErrorMessage(title),
+            ...(details === undefined ? {} : {details}),
             actions: actionsOverride ?? policy.actions,
         };
         this.failuresById.set(id, failure);
@@ -1196,7 +1288,7 @@ export class CodexEventHandler {
             return `${turnId}:error`;
         }
         this.allocatedFailureScopes.add(scope);
-        return `${scope}:error:${this.sessionFailureEpoch}:${this.nextNoticeId++}`;
+        return `${scope}:error:${this.sessionFailureIds.allocate()}`;
     }
 
     /**
@@ -1219,6 +1311,8 @@ export class CodexEventHandler {
 
     private recordRetryWarning(params: ErrorNotification, attributeToTurn = true): SessionFailure {
         const kind = this.sessionFailureKind(params.error);
+        // Codex puts the cause of the retry here, e.g. "idle timeout waiting for websocket".
+        const details = params.error.additionalDetails?.trim() || undefined;
         return this.recordSessionFailure(
             kind,
             params.turnId,
@@ -1226,6 +1320,7 @@ export class CodexEventHandler {
             params.error.message,
             [],
             attributeToTurn,
+            details,
         );
     }
 
@@ -1235,7 +1330,7 @@ export class CodexEventHandler {
             ? this.lastSessionNotice.failure
             : undefined;
         const id = previous?.id
-            ?? `${this.sessionState.sessionId}:notice:${this.sessionFailureEpoch}:${this.nextNoticeId++}`;
+            ?? `${this.sessionState.sessionId}:notice:${this.sessionFailureIds.allocate()}`;
         const notice: SessionFailure = {
             id,
             revision: nextSessionFailureRevision(previous, id),

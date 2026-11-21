@@ -99,7 +99,8 @@ const reviewReplayTurns: Thread["turns"] = [
                 id: "review-summary",
                 text: "Review complete.",
                 phase: null,
-                moderation: null, memoryCitation: null,
+                moderation: null,
+                memoryCitation: null,
                 delivery: null,
                 questions: null,
             },
@@ -126,7 +127,8 @@ const reviewReplayTurns: Thread["turns"] = [
                 id: "ordinary-reply",
                 text: "OK",
                 phase: null,
-                moderation: null, memoryCitation: null,
+                moderation: null,
+                memoryCitation: null,
                 delivery: null,
                 questions: null,
             },
@@ -149,7 +151,8 @@ const reviewReplayTurns: Thread["turns"] = [
                 id: "review2-summary",
                 text: "Second review complete.",
                 phase: null,
-                moderation: null, memoryCitation: null,
+                moderation: null,
+                memoryCitation: null,
                 delivery: null,
                 questions: null,
             },
@@ -225,7 +228,7 @@ async function connectV2Client(options?: {
     const codexAcpClient = new CodexAcpClient(new CodexAppServerClient(mocks.mockCodexConnection as any));
     vi.spyOn(codexAcpClient, "readAuthRequirement").mockResolvedValue({required: false, account: null});
     vi.spyOn(codexAcpClient, "getAgentConfiguredModelProvider").mockResolvedValue("openai");
-    vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false, userId: null});
+    vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({account: null, userId: null, requiresOpenaiAuth: false});
     vi.spyOn(codexAcpClient, "awaitMcpServerStartup").mockResolvedValue({ready: [], failed: [], cancelled: []});
     const router = createAcpAgentRouter((connection) => new CodexAcpServer(connection, codexAcpClient));
     const clientToAgent = new TransformStream<Uint8Array, Uint8Array>();
@@ -500,7 +503,8 @@ describe('resume replay of Codex file citations', () => {
             id: "cited-reply",
             text: 'The limit is 12.\n\n:codex-file-citation{path="policy.txt" purpose="source"}',
             phase: null,
-            moderation: null, memoryCitation: null,
+            moderation: null,
+            memoryCitation: null,
             delivery: null,
             questions: null,
         }],

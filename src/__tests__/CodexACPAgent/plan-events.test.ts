@@ -152,7 +152,10 @@ describe("CodexEventHandler - plan events", () => {
         );
     });
 
-    it("keeps turn plan updates as ACP checklist updates", async () => {
+    it.each([
+        {name: "a legacy plan update without the plan capability", capabilities: undefined, snapshot: "plan-checklist-update.json"},
+        {name: "an items plan_update with the plan capability", capabilities: {plan: {}}, snapshot: "plan-checklist-items-update.json"},
+    ])("sends turn plan updates as $name", async ({capabilities, snapshot}) => {
         const notifications: ServerNotification[] = [
             {
                 method: "turn/plan/updated",
@@ -174,11 +177,29 @@ describe("CodexEventHandler - plan events", () => {
             },
         ];
 
-        await setupPromptAndSendNotifications(mockFixture, sessionId, sessionState, notifications);
+        await setupPromptAndSendNotifications(mockFixture, sessionId, {
+            ...sessionState,
+            clientCapabilities: ClientCapabilities.from(capabilities),
+        }, notifications);
 
-        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot(
-            "data/plan-checklist-update.json",
-        );
+        await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot(`data/${snapshot}`);
+    });
+
+    it.each([
+        {capabilities: undefined, update: {sessionUpdate: "plan", entries: []}},
+        {
+            capabilities: {plan: {}, _meta: {jetbrains: {air: {version: 1}}}},
+            update: {sessionUpdate: "plan_update", plan: {type: "items", planId: "codex-structured-plan", entries: []}},
+        },
+    ])("reports a cleared v1 checklist as $update.sessionUpdate", async ({capabilities, update}) => {
+        const notify = vi.fn(async (_method: unknown, _params: unknown) => {});
+        const handler = createTestEventHandler({notify, request: vi.fn()} as unknown as AcpClientConnection, {
+            ...sessionState, clientCapabilities: ClientCapabilities.from(capabilities),
+        });
+        await handler.handleNotification({
+            method: "turn/plan/updated", params: {threadId: sessionId, turnId: "turn-1", explanation: null, plan: []},
+        });
+        expect(notify).toHaveBeenCalledExactlyOnceWith("session/update", {sessionId, update});
     });
 
     describe("plan update coalescing", () => {

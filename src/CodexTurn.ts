@@ -4,7 +4,7 @@ import {ACPSessionConnection, type AcpClientConnection} from "./ACPSessionConnec
 import {CodexAcpClient} from "./CodexAcpClient";
 import {CodexApprovalHandler} from "./permissions/CodexApprovalHandler";
 import {CodexElicitationHandler} from "./CodexElicitationHandler";
-import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
+import {CodexEventHandler, type CompletedPlan, SessionFailureIds} from "./CodexEventHandler";
 import type {SessionState} from "./CodexAcpServer";
 import type {ServerNotification} from "./app-server";
 import type {TurnCompletedNotification} from "./app-server/v2";
@@ -35,7 +35,7 @@ export class CodexTurn {
             connection,
             state,
             false,
-            randomUUID(),
+            new SessionFailureIds(randomUUID()),
             new CodexSubagentEventRouter(
                 state.sessionId,
                 false,

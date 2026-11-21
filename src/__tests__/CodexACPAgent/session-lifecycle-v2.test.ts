@@ -8,6 +8,7 @@ import {CodexAcpClient} from '../../CodexAcpClient';
 import {CodexAppServerClient} from '../../CodexAppServerClient';
 import type {PermissionProfileSummary, SkillsListParams, SkillsListResponse, Thread} from '../../app-server/v2';
 import {MODE_CONFIG_ID} from '../../AgentMode';
+import {FAST_MODE_CONFIG_ID} from '../../FastModeConfig';
 import {createTestModel} from '../acp-test-utils';
 import {createMockConnections} from './test-utils';
 import {checkV2SessionUpdate, expectConformingV2SessionUpdates} from './v2-session-update-guard';
@@ -115,6 +116,7 @@ async function connectV2Client(options?: {
     permissionProfiles?: PermissionProfileSummary[];
     activePermissionProfileId?: string;
     defaultPermissionProfileId?: string;
+    serviceTier?: string | null;
 }) {
     const mocks = createMockConnections();
     const codexRequests: Array<{method: string, params: unknown}> = [];
@@ -136,6 +138,14 @@ async function connectV2Client(options?: {
             return {config: {default_permissions: options.defaultPermissionProfileId}, origins: {}, layers: []};
         }
         const response = codexResponse(method, options?.replayTurns, options?.thread);
+        if (options?.serviceTier !== undefined) {
+            if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
+                response["serviceTier"] = options.serviceTier;
+            }
+            if (method === "model/list") {
+                response["data"] = [createTestModel({id: "gpt-5", additionalSpeedTiers: ["fast"]})];
+            }
+        }
         if (options?.activePermissionProfileId && ["thread/start", "thread/resume", "thread/fork"].includes(method)) {
             return {...response, activePermissionProfile: {id: options.activePermissionProfileId, extends: null}};
         }
@@ -144,7 +154,7 @@ async function connectV2Client(options?: {
     const codexAcpClient = new CodexAcpClient(new CodexAppServerClient(mocks.mockCodexConnection as any));
     vi.spyOn(codexAcpClient, "readAuthRequirement").mockResolvedValue({required: false, account: null});
     vi.spyOn(codexAcpClient, "getAgentConfiguredModelProvider").mockResolvedValue("openai");
-    vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({account: null, requiresOpenaiAuth: false, userId: null});
+    vi.spyOn(codexAcpClient, "getAccount").mockResolvedValue({account: null, userId: null, requiresOpenaiAuth: false});
     vi.spyOn(codexAcpClient, "awaitMcpServerStartup").mockResolvedValue({ready: [], failed: [], cancelled: []});
     let agent: CodexAcpServer | null = null;
     const router = createAcpAgentRouter((connection) => {
@@ -241,6 +251,31 @@ describe('Session lifecycle over ACP v2', () => {
 
         expect(response.configOptions?.find(option => option.configId === MODE_CONFIG_ID))
             .toMatchObject({type: "select", currentValue: "permission-profile:team-default"});
+    });
+
+    describe.each([
+        {operation: "new", replayFrom: undefined},
+        {operation: "resume", replayFrom: null},
+        {operation: "resume", replayFrom: {type: "start"}},
+        {operation: "fork", replayFrom: undefined},
+    ] as const)('Fast mode over v2 $operation with replayFrom=$replayFrom', ({operation, replayFrom}) => {
+        it.each([
+            {serviceTier: "fast", enabled: true},
+            {serviceTier: "priority", enabled: true},
+            {serviceTier: "flex", enabled: false},
+            {serviceTier: null, enabled: false},
+            {serviceTier: "unknown", enabled: false},
+        ])('restores Fast mode from the app-server tier $serviceTier', async ({serviceTier, enabled}) => {
+            const {connection} = await connectV2Client({serviceTier});
+            closeClient = () => connection.close();
+
+            const response = await connection.agent.request(acpV2.methods.agent.session[operation], {
+                sessionId, cwd, ...(replayFrom === undefined ? {} : {replayFrom}),
+            });
+
+            await expect(dump(response.configOptions?.find(option => option.configId === FAST_MODE_CONFIG_ID)))
+                .toMatchFileSnapshot(`data/session-lifecycle-v2-fast-mode-${enabled ? "on" : "off"}.json`);
+        });
     });
 
     it.each([null, {type: "start"}] as const)(
@@ -439,7 +474,7 @@ describe('Session lifecycle over ACP v2', () => {
         const response = await connection.agent.request(acpV2.methods.agent.session.resume, {
             sessionId, cwd, ...(replayFrom === undefined ? {} : {replayFrom}),
         });
-        expect(updates.at(-1)?.update).toEqual({sessionUpdate: "state_update", state: "idle"});
+        expect(updates.at(-1)?.update).toEqual({sessionUpdate: "state_update", state: "idle", background: []});
         // Commands are in the response; current info and foreground state are notified.
         const sessionUpdates = await waitForSessionUpdates(updates, ["session_info_update", "session_info_update", "state_update"]);
 
@@ -565,7 +600,8 @@ describe('Session lifecycle over ACP v2', () => {
                 id: "item-agent-1",
                 text: "Hello!",
                 phase: null,
-                moderation: null, memoryCitation: null,
+                moderation: null,
+                memoryCitation: null,
                 delivery: null,
                 questions: null,
             },
@@ -601,10 +637,39 @@ describe('Session lifecycle over ACP v2', () => {
         // resolves; nothing should still be pending afterwards.
         const replayedUpdates = [...updates];
         expect(agent().getSessionState(sessionId)).toBeTruthy();
-        expect(replayedUpdates.at(-1)?.update).toEqual({sessionUpdate: "state_update", state: "idle"});
+        expect(replayedUpdates.at(-1)?.update).toEqual({sessionUpdate: "state_update", state: "idle", background: []});
 
         await expect(dump({response, codexRequests, updates: replayedUpdates}))
             .toMatchFileSnapshot('data/session-lifecycle-v2-resume-start-replay.json');
+    });
+
+    it('ends an empty replay before current-state updates', async () => {
+        const {connection, updates} = await connectV2Client();
+        closeClient = () => connection.close();
+        await connection.agent.request(acpV2.methods.agent.session.resume, {sessionId, cwd, replayFrom: {type: "start"}});
+        expect(updates[0]?.update).toEqual({sessionUpdate: "replay_complete"});
+        expect(updates.filter(({update}) => update.sessionUpdate === "replay_complete")).toHaveLength(1);
+        expect(updates.at(-1)?.update).toEqual({sessionUpdate: "state_update", state: "idle", background: []});
+    });
+
+    it('does not activate an inactive session at replay_complete', async () => {
+        const {connection, agent, updates} = await connectV2Client();
+        closeClient = () => connection.close();
+        let release!: () => void;
+        const held = new Promise<void>(resolve => { release = resolve; });
+        const server = agent() as any;
+        const snapshot = server.snapshotSessionStateV2.bind(server);
+        vi.spyOn(server, "snapshotSessionStateV2").mockImplementation(async () => {
+            await held;
+            await snapshot(sessionId);
+        });
+        const resumed = connection.agent.request(acpV2.methods.agent.session.resume, {sessionId, cwd, replayFrom: {type: "start"}});
+        try {
+            await vi.waitFor(() => expect(updates.some(({update}) => update.sessionUpdate === "replay_complete")).toBe(true));
+            await expect(connection.agent.request(acpV2.methods.agent.session.prompt, {
+                sessionId, prompt: [{type: "text", text: "Too early"}],
+            })).rejects.toMatchObject({code: -32002});
+        } finally { release(); await resumed; }
     });
 
     it('snapshots a live rename after replay rather than restoring the older history title', async () => {
@@ -639,6 +704,10 @@ describe('Session lifecycle over ACP v2', () => {
         });
         const lastHistoryIndex = updates.map(({update}) => update.sessionUpdate).lastIndexOf("agent_message_chunk");
         expect(updates.indexOf(info.at(-1)!)).toBeGreaterThan(lastHistoryIndex);
+        const boundary = updates.findIndex(({update}) => update.sessionUpdate === "replay_complete");
+        expect(boundary).toBeGreaterThan(lastHistoryIndex);
+        expect(updates.filter(({update}) => update.sessionUpdate === "session_info_update")
+            .every(info => updates.indexOf(info) > boundary)).toBe(true);
     });
 
     it('does not replay any history when replayFrom is absent', async () => {
@@ -650,7 +719,7 @@ describe('Session lifecycle over ACP v2', () => {
 
         expect(updates.some(({update}) => update.sessionUpdate.endsWith("_message_chunk")
             || update.sessionUpdate.endsWith("_message")
-            || update.sessionUpdate === "tool_call")).toBe(false);
+            || update.sessionUpdate === "tool_call" || update.sessionUpdate === "replay_complete")).toBe(false);
     });
 
     it('forks a session, dropping modes and using v2-shaped configOptions', async () => {

@@ -120,7 +120,8 @@ describe('tool calls and messages over ACP v2', () => {
             id: "item-agent",
             text: "",
             phase: null,
-            moderation: null, memoryCitation: null,
+            moderation: null,
+            memoryCitation: null,
             delivery: null,
             questions: null,
         }));
@@ -140,7 +141,8 @@ describe('tool calls and messages over ACP v2', () => {
             id: "call-question",
             text: "Which environment?\n- Staging\n- Production",
             phase: "final_answer",
-            moderation: null, memoryCitation: null,
+            moderation: null,
+            memoryCitation: null,
             delivery: "async",
             questions: [{title: "Which environment?", options: ["Staging", "Production"]}],
         };

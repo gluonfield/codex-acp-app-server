@@ -144,7 +144,7 @@ jobs:
         with:
           name: Codex ACP ${{ github.ref_name }}
           body: |
-            Codex ACP 2.6.0 with Codex CLI 0.169.0.
+            Codex ACP 2.8.0 with Codex CLI 0.170.0.
 
             Preserves Jaz side conversations, exact provider metadata, native steering, usage accounting, and OAuth credentials.
           generate_release_notes: false

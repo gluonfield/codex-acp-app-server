@@ -662,8 +662,6 @@ export class CodexEventHandler {
             case "error":
                 return await this.createErrorEvent(notification.params);
             case "turn/started":
-                // A subagent's turn belongs to its own thread and must not replace this session's turn.
-                if (notification.params.threadId !== this.sessionState.sessionId) return null;
                 this.sessionState.promptTokenUsage.start(notification.params.turn.id);
                 this.sessionState.interruptTurnId = notification.params.turn.id;
                 // A review's child turn starts under its own id, while the review's items, errors and

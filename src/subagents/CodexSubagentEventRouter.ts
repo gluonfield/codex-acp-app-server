@@ -168,7 +168,8 @@ export class CodexSubagentEventRouter {
                 next.start(notification.params.turn.id);
                 this.usageByThread.set(notification.params.threadId, next);
             }
-            return childTurn;
+            // A subagent's turn is never the session's turn, also when this client does not show the subagent.
+            return notification.params.threadId !== this.rootSessionId;
         }
         if (notification.method === "turn/completed") {
             if (notification.params.threadId === this.rootSessionId) {

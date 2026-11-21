@@ -13,7 +13,6 @@ Set `CODEX_PATH` to run a different Codex binary; versions other than the one sp
 - `INITIAL_AGENT_MODE` - initial mode id: `read-only`, `workspace-write`, `agent`, `agent-full-access`, or `permission-profile:<profile-id>`. See [permission profile selection](docs/permission-profiles.md).
 - `NO_BROWSER` - hide browser-based ChatGPT auth when set.
 - `APP_SERVER_LOGS` - directory for adapter logs.
-- `CODEX_ACP_MCP_REFRESH=1` - advertise `_session/mcp/refresh` for a separately verified native runtime that reconnects unchanged MCP servers on `config/mcpServer/reload`. Leave unset with bundled Codex 0.154.0: it acknowledges reload but retains the old catalog. The native operation refreshes every loaded thread and configured server.
 - `CODEX_ACP_APP_SERVER_CRASH_LIMIT` - how many crashes of the Codex app-server in the crash window stop its automatic restart (default `5`).
 - `CODEX_ACP_APP_SERVER_CRASH_WINDOW_MS` - the crash window in milliseconds (default `300000`, 5 minutes).
 - `CODEX_ACP_PROMPT_SUGGESTIONS` - set to `false` to turn off the predicted follow-up prompt for AIR. It costs one extra model call per turn on the session's model, mostly from cached context.
